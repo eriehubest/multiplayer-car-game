@@ -1,20 +1,46 @@
 const PORT = 8000;
+const ROOM_BROADCAST_MS = 50;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-type TypingResult = {
-  id: number;
-  wpm: number;
-  accuracy: number;
-  seconds: number;
-  createdAt: string;
+type PlayerState = {
+  id: string;
+  name: string;
+  color: string;
+  x: number;
+  y: number;
+  angle: number;
+  speed: number;
+  updatedAt: number;
 };
 
-const results: TypingResult[] = [];
+type Client = {
+  id: string;
+  socket: WebSocket;
+  state: PlayerState;
+};
+
+type Room = {
+  id: string;
+  clients: Map<string, Client>;
+  intervalId: ReturnType<typeof setInterval>;
+};
+
+type ClientMessage = {
+  type: "player:update";
+  x: number;
+  y: number;
+  angle: number;
+  speed: number;
+  color?: string;
+  name?: string;
+};
+
+const rooms = new Map<string, Room>();
 
 function jsonResponse(data: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -27,15 +53,7 @@ function jsonResponse(data: unknown, init: ResponseInit = {}) {
   });
 }
 
-async function readJson(request: Request) {
-  try {
-    return await request.json();
-  } catch {
-    return null;
-  }
-}
-
-async function handler(request: Request): Promise<Response> {
+function handler(request: Request): Response {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
@@ -45,44 +63,223 @@ async function handler(request: Request): Promise<Response> {
   if (url.pathname === "/api/health") {
     return jsonResponse({
       status: "ok",
-      service: "deno-backend",
+      service: "multiplayer-car-backend",
+      rooms: rooms.size,
       time: new Date().toISOString(),
     });
   }
 
-  if (url.pathname === "/api/results" && request.method === "GET") {
-    return jsonResponse({ results: results.toReversed() });
+  if (url.pathname === "/api/rooms") {
+    return jsonResponse({
+      rooms: [...rooms.values()].map((room) => ({
+        id: room.id,
+        players: room.clients.size,
+      })),
+    });
   }
 
-  if (url.pathname === "/api/results" && request.method === "POST") {
-    const body = await readJson(request);
-
-    if (
-      !body ||
-      typeof body.wpm !== "number" ||
-      typeof body.accuracy !== "number" ||
-      typeof body.seconds !== "number"
-    ) {
-      return jsonResponse({ error: "Invalid result payload" }, { status: 400 });
-    }
-
-    const result: TypingResult = {
-      id: Date.now(),
-      wpm: Math.round(body.wpm),
-      accuracy: Math.round(body.accuracy),
-      seconds: Math.round(body.seconds * 10) / 10,
-      createdAt: new Date().toISOString(),
-    };
-
-    results.push(result);
-
-    return jsonResponse({ result }, { status: 201 });
+  if (url.pathname === "/ws") {
+    return handleWebSocket(request, url);
   }
 
   return jsonResponse({ error: "Not found" }, { status: 404 });
 }
 
+function handleWebSocket(request: Request, url: URL): Response {
+  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+    return jsonResponse({ error: "Expected websocket upgrade" }, { status: 400 });
+  }
+
+  const roomId = normalizeRoomId(url.searchParams.get("roomId"));
+  const playerName = normalizePlayerName(url.searchParams.get("name"));
+  const playerColor = normalizeColor(url.searchParams.get("color")) ?? randomColor();
+  const clientId = crypto.randomUUID();
+  const { socket, response } = Deno.upgradeWebSocket(request);
+  const room = getOrCreateRoom(roomId);
+
+  const client: Client = {
+    id: clientId,
+    socket,
+    state: {
+      id: clientId,
+      name: playerName,
+      color: playerColor,
+      x: 0,
+      y: 0,
+      angle: 0,
+      speed: 0,
+      updatedAt: Date.now(),
+    },
+  };
+
+  socket.onopen = () => {
+    room.clients.set(clientId, client);
+    send(socket, {
+      type: "player:welcome",
+      id: clientId,
+      roomId,
+      tickMs: ROOM_BROADCAST_MS,
+    });
+    broadcastRoom(room, {
+      type: "player:joined",
+      player: client.state,
+    });
+  };
+
+  socket.onmessage = (event) => {
+    const message = parseClientMessage(event.data);
+
+    if (!message) {
+      send(socket, { type: "error", error: "Invalid message" });
+      return;
+    }
+
+    updateClientState(client, message);
+  };
+
+  socket.onclose = () => {
+    removeClient(roomId, clientId);
+  };
+
+  socket.onerror = () => {
+    removeClient(roomId, clientId);
+  };
+
+  return response;
+}
+
+function getOrCreateRoom(roomId: string): Room {
+  const existing = rooms.get(roomId);
+
+  if (existing) return existing;
+
+  const room: Room = {
+    id: roomId,
+    clients: new Map(),
+    intervalId: setInterval(() => {
+      const current = rooms.get(roomId);
+
+      if (!current) return;
+
+      broadcastRoomState(current);
+    }, ROOM_BROADCAST_MS),
+  };
+
+  rooms.set(roomId, room);
+  return room;
+}
+
+function removeClient(roomId: string, clientId: string) {
+  const room = rooms.get(roomId);
+
+  if (!room) return;
+
+  room.clients.delete(clientId);
+  broadcastRoom(room, { type: "player:left", id: clientId });
+
+  if (room.clients.size === 0) {
+    clearInterval(room.intervalId);
+    rooms.delete(roomId);
+  }
+}
+
+function updateClientState(client: Client, message: ClientMessage) {
+  client.state = {
+    ...client.state,
+    name: message.name ? normalizePlayerName(message.name) : client.state.name,
+    color: normalizeColor(message.color) ?? client.state.color,
+    x: clampFinite(message.x),
+    y: clampFinite(message.y),
+    angle: clampFinite(message.angle),
+    speed: clampFinite(message.speed),
+    updatedAt: Date.now(),
+  };
+}
+
+function broadcastRoomState(room: Room) {
+  broadcastRoom(room, {
+    type: "room:state",
+    roomId: room.id,
+    players: [...room.clients.values()].map((client) => client.state),
+    sentAt: Date.now(),
+  });
+}
+
+function broadcastRoom(room: Room, payload: unknown) {
+  const encoded = JSON.stringify(payload);
+
+  for (const client of room.clients.values()) {
+    if (client.socket.readyState === WebSocket.OPEN) {
+      client.socket.send(encoded);
+    }
+  }
+}
+
+function send(socket: WebSocket, payload: unknown) {
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(payload));
+  }
+}
+
+function parseClientMessage(data: unknown): ClientMessage | null {
+  if (typeof data !== "string") return null;
+
+  try {
+    const value: unknown = JSON.parse(data);
+
+    if (!isClientMessage(value)) return null;
+
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function isClientMessage(value: unknown): value is ClientMessage {
+  if (!value || typeof value !== "object") return false;
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    candidate.type === "player:update" &&
+    typeof candidate.x === "number" &&
+    typeof candidate.y === "number" &&
+    typeof candidate.angle === "number" &&
+    typeof candidate.speed === "number"
+  );
+}
+
+function normalizeRoomId(value: string | null) {
+  const roomId = value?.trim() || "default";
+
+  return roomId.slice(0, 64).replaceAll(/[^\w-]/g, "-");
+}
+
+function normalizePlayerName(value: string | null) {
+  const name = value?.trim() || "player";
+
+  return name.slice(0, 24);
+}
+
+function normalizeColor(value: string | undefined | null) {
+  if (!value) return null;
+
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : null;
+}
+
+function clampFinite(value: number) {
+  if (!Number.isFinite(value)) return 0;
+
+  return Math.max(-1_000_000, Math.min(1_000_000, value));
+}
+
+function randomColor() {
+  const colors = ["#ffcf33", "#52ff7a", "#61a8ff", "#ff67d8", "#ff7a59"];
+
+  return colors[Math.floor(Math.random() * colors.length)];
+}
+
 if (import.meta.main) {
-  console.log(`Deno API listening on http://localhost:${PORT}`);
+  console.log(`Multiplayer API listening on http://localhost:${PORT}`);
   Deno.serve({ port: PORT }, handler);
 }
