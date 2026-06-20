@@ -30,7 +30,7 @@ type LocalPlayerState = {
   speed: number;
 };
 
-const DEFAULT_WS_URL = "wss://multiplayer-car-game-sfaz423w96tp.eriehubest.deno.net/ws";
+const DEFAULT_WS_URL = "wss://multiplayer-car-game-ezgseam08x6y.eriehubest.deno.net/ws";
 const SEND_INTERVAL_MS = 50;
 const RECONNECT_DELAY_MS = 1500;
 
