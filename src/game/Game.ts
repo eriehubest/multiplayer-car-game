@@ -1,6 +1,7 @@
 import { DEBUG_PANEL_WIDTH, GAME_INSET, createDefaultSettings } from "../config/gameSettings";
 import { PlayerVehicle } from "../entities/PlayerVehicle";
 import { InputState } from "../input/InputState";
+import { MultiplayerClient, type RemotePlayerState } from "../multiplayer/MultiplayerClient";
 import { LetterGrid } from "../rendering/LetterGrid";
 import { DebugPanel } from "../ui/DebugPanel";
 import { Minimap } from "../ui/Minimap";
@@ -15,6 +16,7 @@ export class Game {
   private world = new WorldMap();
   private grid: LetterGrid;
   private debugPanel = new DebugPanel(this.settings);
+  private multiplayer = new MultiplayerClient();
   private minimap: Minimap | null = null;
   private isPlayerPlaced = false;
   private lastFrame = performance.now();
@@ -26,6 +28,7 @@ export class Game {
   start() {
     this.renderLayout();
     this.bindWindowEvents();
+    this.multiplayer.connect();
     requestAnimationFrame((now) => this.tick(now));
   }
 
@@ -111,6 +114,7 @@ export class Game {
       this.camera.update(deltaSeconds);
       this.grid.updateCameraOffset(this.camera);
       this.renderPlayer();
+      this.syncMultiplayer(now);
       this.renderMinimap();
       this.grid.updateActiveLetter(this.player);
       this.debugPanel.updateReadout(this.player);
@@ -121,6 +125,56 @@ export class Game {
 
   private renderPlayer() {
     this.player.render(this.grid.getPlayerElement(), this.camera.x, this.camera.y);
+  }
+
+  private syncMultiplayer(now: number) {
+    this.multiplayer.sendPlayerState({
+      name: "player",
+      color: this.settings.playerColor,
+      x: this.player.x,
+      y: this.player.y,
+      angle: this.player.angle,
+      speed: this.player.speed,
+    }, now);
+
+    this.renderRemotePlayers(this.multiplayer.getRemotePlayers());
+  }
+
+  private renderRemotePlayers(players: RemotePlayerState[]) {
+    const container = this.grid.getRemotePlayersElement();
+
+    if (!container) return;
+
+    const existing = new Map(
+      [...container.querySelectorAll<HTMLElement>(".remote-player")]
+        .map((element) => [element.dataset.playerId ?? "", element]),
+    );
+
+    for (const player of players) {
+      let element = existing.get(player.id);
+
+      if (!element) {
+        element = document.createElement("span");
+        element.className = "remote-player";
+        element.dataset.playerId = player.id;
+        element.textContent = "▲";
+        container.append(element);
+      }
+
+      element.style.color = player.color;
+      element.style.left = `${player.x - this.camera.x}px`;
+      element.style.top = `${player.y - this.camera.y}px`;
+      element.style.transform = `
+        translate(-50%, -50%)
+        rotate(${player.angle + Math.PI / 2}rad)
+      `;
+      element.title = player.name;
+      existing.delete(player.id);
+    }
+
+    for (const element of existing.values()) {
+      element.remove();
+    }
   }
 
   private bindMinimap() {

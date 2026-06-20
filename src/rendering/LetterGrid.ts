@@ -86,6 +86,7 @@ export class LetterGrid {
           >
             ${this.renderVisibleCells()}
           </section>
+          <section class="remote-players" aria-label="remote players"></section>
           <span class="player" aria-label="player">▲</span>
           <canvas class="minimap" aria-label="Track minimap"></canvas>
         </section>
@@ -104,6 +105,10 @@ export class LetterGrid {
 
   getPlayerElement() {
     return this.root.querySelector<HTMLElement>(".player");
+  }
+
+  getRemotePlayersElement() {
+    return this.root.querySelector<HTMLElement>(".remote-players");
   }
 
   getMinimapElement() {

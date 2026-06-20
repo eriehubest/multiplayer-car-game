@@ -112,12 +112,12 @@ body {
   text-shadow: none;
 }
 
-.player {
+.player,
+.remote-player {
   position: absolute;
   top: var(--player-y);
   left: var(--player-x);
   z-index: 1;
-  color: var(--player-color);
   font-family:
     "Courier New", Courier, ui-monospace, "SFMono-Regular", Menlo, Monaco,
     Consolas, monospace;
@@ -125,11 +125,29 @@ body {
   font-weight: inherit;
   line-height: 1;
   pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.player {
+  color: var(--player-color);
   text-shadow:
     0 0 6px var(--player-color),
     0 0 14px var(--player-color),
     0 0 28px rgb(255 207 51 / 0.55);
-  transform: translate(-50%, -50%);
+}
+
+.remote-players {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.remote-player {
+  opacity: 0.88;
+  text-shadow:
+    0 0 5px currentColor,
+    0 0 12px currentColor;
 }
 
 .minimap {
