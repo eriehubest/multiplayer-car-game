@@ -1,8 +1,9 @@
 {
+  "unstable": ["kv"],
   "tasks": {
-    "dev": "deno run --watch --allow-net main.ts",
-    "start": "deno run --allow-net main.ts",
-    "check": "deno check main.ts",
+    "dev": "deno run --watch --unstable-kv --allow-net main.ts",
+    "start": "deno run --unstable-kv --allow-net main.ts",
+    "check": "deno check --unstable-kv main.ts",
     "lint": "deno lint"
   },
   "lint": {

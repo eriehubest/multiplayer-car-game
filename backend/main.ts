@@ -48,8 +48,7 @@ type LeaderboardEntry = {
 };
 
 const rooms = new Map<string, Room>();
-const memoryLeaderboard: LeaderboardEntry[] = [];
-let kvPromise: Promise<Deno.Kv | null> | null = null;
+let kvPromise: Promise<Deno.Kv> | null = null;
 
 function jsonResponse(data: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -89,7 +88,11 @@ async function handler(request: Request): Promise<Response> {
 
   if (url.pathname === "/api/leaderboard") {
     if (request.method === "GET") {
-      return jsonResponse({ scores: await getLeaderboardScores() });
+      const result = await getLeaderboardScores();
+
+      if (!result.ok) return result.response;
+
+      return jsonResponse({ scores: result.scores, storage: "kv" });
     }
 
     if (request.method === "POST") {
@@ -120,46 +123,73 @@ async function saveLeaderboardScore(request: Request) {
     time: score.time,
     createdAt: Date.now(),
   };
-  const kv = await getKv();
+  const kvResult = await getKv();
 
-  if (kv) {
-    await kv.set(["leaderboard", entry.id], entry);
-  } else {
-    memoryLeaderboard.push(entry);
+  if (!kvResult.ok) {
+    return kvResult.response;
   }
 
-  return jsonResponse({ score: entry, scores: await getLeaderboardScores() }, { status: 201 });
+  await kvResult.kv.set(["leaderboard", entry.id], entry);
+
+  const leaderboardResult = await getLeaderboardScores();
+
+  if (!leaderboardResult.ok) return leaderboardResult.response;
+
+  return jsonResponse({
+    score: entry,
+    scores: leaderboardResult.scores,
+    storage: "kv",
+  }, { status: 201 });
 }
 
 async function getLeaderboardScores() {
-  const kv = await getKv();
+  const kvResult = await getKv();
   const scores: LeaderboardEntry[] = [];
 
-  if (kv) {
-    for await (const entry of kv.list<LeaderboardEntry>({ prefix: ["leaderboard"] })) {
-      scores.push(entry.value);
-    }
-  } else {
-    scores.push(...memoryLeaderboard);
+  if (!kvResult.ok) {
+    return kvResult;
   }
 
-  return scores
-    .filter(isLeaderboardEntry)
-    .sort((a, b) => a.time - b.time)
-    .slice(0, 10);
+  for await (const entry of kvResult.kv.list<LeaderboardEntry>({ prefix: ["leaderboard"] })) {
+    scores.push(entry.value);
+  }
+
+  return {
+    ok: true as const,
+    scores: scores
+      .filter(isLeaderboardEntry)
+      .sort((a, b) => a.time - b.time)
+      .slice(0, 10),
+  };
 }
 
-function getKv() {
+async function getKv() {
   if (!("openKv" in Deno) || typeof Deno.openKv !== "function") {
-    return Promise.resolve(null);
+    return {
+      ok: false as const,
+      response: jsonResponse({
+        error: "Deno KV is not enabled. Enable --unstable-kv for the backend deployment.",
+      }, { status: 503 }),
+    };
   }
 
-  kvPromise ??= Deno.openKv().catch((error) => {
-    console.warn("Deno KV unavailable, falling back to in-memory leaderboard", error);
-    return null;
-  });
+  try {
+    kvPromise ??= Deno.openKv();
 
-  return kvPromise;
+    return {
+      ok: true as const,
+      kv: await kvPromise,
+    };
+  } catch (error) {
+    console.error("Deno KV unavailable", error);
+
+    return {
+      ok: false as const,
+      response: jsonResponse({
+        error: "Deno KV is unavailable for this deployment.",
+      }, { status: 503 }),
+    };
+  }
 }
 
 async function parseJsonBody(request: Request) {
