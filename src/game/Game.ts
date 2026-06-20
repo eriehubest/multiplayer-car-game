@@ -157,7 +157,7 @@ export class Game {
         element = document.createElement("span");
         element.className = "remote-player";
         element.dataset.playerId = player.id;
-        element.textContent = "▲";
+        element.textContent = "car";
         container.append(element);
       }
 
@@ -166,7 +166,7 @@ export class Game {
       element.style.top = `${player.y - this.camera.y}px`;
       element.style.transform = `
         translate(-50%, -50%)
-        rotate(${player.angle + Math.PI / 2}rad)
+        rotate(${player.angle}rad)
       `;
       element.title = player.name;
       existing.delete(player.id);

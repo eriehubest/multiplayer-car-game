@@ -58,7 +58,7 @@ export class PlayerVehicle {
 
     element.style.transform = `
       translate(-50%, -50%)
-      rotate(${this.angle + Math.PI / 2}rad)
+      rotate(${this.angle}rad)
     `;
     element.style.left = `${this.x - cameraX}px`;
     element.style.top = `${this.y - cameraY}px`;

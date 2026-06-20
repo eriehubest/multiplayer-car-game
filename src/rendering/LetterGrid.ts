@@ -5,11 +5,15 @@ import type { WorldMap } from "../world/WorldMap";
 
 type CachedCell = {
   char: string;
-  classes: string;
+  kind: "letter" | "border" | "outside";
+  size: number;
 };
 
 export class LetterGrid {
-  private activeCellIndex = -1;
+  private activeCellIndex = {
+    column: -1,
+    row: -1,
+  };
   private viewport = {
     columns: 0,
     rows: 0,
@@ -23,6 +27,8 @@ export class LetterGrid {
     rows: 0,
   };
   private cachedCells: CachedCell[] = [];
+  private lastCamera: Camera | null = null;
+  private world: WorldMap | null = null;
 
   constructor(
     private root: HTMLElement,
@@ -42,6 +48,7 @@ export class LetterGrid {
     const visibleColumns = Math.ceil(viewportWidth / cell.width) + 2;
     const visibleRows = Math.ceil(viewportHeight / cell.height) + 2;
 
+    this.world = world;
     this.map = {
       columns: mapColumns,
       rows: mapRows,
@@ -58,13 +65,12 @@ export class LetterGrid {
       const column = index % mapColumns;
       const row = Math.floor(index / mapColumns);
       const tile = world.getTile(column, row, cell.width, cell.height);
-      const classes = [
-        this.sizeClassForCoordinate(column, row),
-        tile.kind === "border" ? "tile-border" : "",
-        tile.kind === "outside" ? "tile-outside" : "",
-      ].filter(Boolean).join(" ");
 
-      return { char: tile.char, classes };
+      return {
+        char: tile.char,
+        kind: tile.kind,
+        size: this.fontSizeForCoordinate(column, row),
+      };
     });
 
     this.root.innerHTML = `
@@ -74,20 +80,9 @@ export class LetterGrid {
           --player-color: ${this.settings.playerColor};
         "
         >
-          <section
-            class="letter-field"
-            style="
-              --columns: ${visibleColumns};
-              --rows: ${visibleRows};
-              width: ${visibleColumns * cell.width}px;
-              height: ${visibleRows * cell.height}px;
-            "
-            aria-label="Random letter game field"
-          >
-            ${this.renderVisibleCells()}
-          </section>
+          <canvas class="letter-canvas" aria-label="Random letter game field"></canvas>
           <section class="remote-players" aria-label="remote players"></section>
-          <span class="player" aria-label="player">▲</span>
+          <span class="player" aria-label="player">car</span>
           <canvas class="minimap" aria-label="Track minimap"></canvas>
         </section>
 
@@ -95,7 +90,10 @@ export class LetterGrid {
       </section>
     `;
 
-    this.activeCellIndex = -1;
+    this.activeCellIndex = {
+      column: -1,
+      row: -1,
+    };
     this.updateCameraOffset(camera);
   }
 
@@ -123,57 +121,29 @@ export class LetterGrid {
   }
 
   updateCameraOffset(camera: Camera) {
-    const letterField = this.root.querySelector<HTMLElement>(".letter-field");
-
-    if (!letterField) return;
-
-    const originColumn = Math.floor(camera.x / this.viewport.cellWidth);
-    const originRow = Math.floor(camera.y / this.viewport.cellHeight);
-
-    if (
-      originColumn !== this.viewport.originColumn ||
-      originRow !== this.viewport.originRow
-    ) {
-      this.viewport.originColumn = originColumn;
-      this.viewport.originRow = originRow;
-      letterField.innerHTML = this.renderVisibleCells();
-      this.activeCellIndex = -1;
-    }
-
-    const offsetX = camera.x - this.viewport.originColumn * this.viewport.cellWidth;
-    const offsetY = camera.y - this.viewport.originRow * this.viewport.cellHeight;
-
-    letterField.style.transform = `translate(${-offsetX}px, ${-offsetY}px)`;
+    this.lastCamera = camera;
+    this.viewport.originColumn = Math.floor(camera.x / this.viewport.cellWidth);
+    this.viewport.originRow = Math.floor(camera.y / this.viewport.cellHeight);
+    this.renderCanvas(camera);
   }
 
   updateActiveLetter(player: PlayerVehicle) {
-    const letterField = this.root.querySelector<HTMLElement>(".letter-field");
-
-    if (!letterField) return;
-
     const worldColumn = Math.floor(player.x / this.viewport.cellWidth);
     const worldRow = Math.floor(player.y / this.viewport.cellHeight);
-    const visibleColumn = worldColumn - this.viewport.originColumn;
-    const visibleRow = worldRow - this.viewport.originRow;
 
     if (
-      visibleColumn < 0 ||
-      visibleRow < 0 ||
-      visibleColumn >= this.viewport.columns ||
-      visibleRow >= this.viewport.rows
-    ) {
-      letterField.children[this.activeCellIndex]?.classList.remove("under-player");
-      this.activeCellIndex = -1;
-      return;
+      worldColumn === this.activeCellIndex.column &&
+      worldRow === this.activeCellIndex.row
+    ) return;
+
+    this.activeCellIndex = {
+      column: worldColumn,
+      row: worldRow,
+    };
+
+    if (this.lastCamera) {
+      this.renderCanvas(this.lastCamera);
     }
-
-    const nextIndex = visibleRow * this.viewport.columns + visibleColumn;
-
-    if (nextIndex === this.activeCellIndex) return;
-
-    letterField.children[this.activeCellIndex]?.classList.remove("under-player");
-    letterField.children[nextIndex]?.classList.add("under-player");
-    this.activeCellIndex = nextIndex;
   }
 
   private measureCell() {
@@ -191,29 +161,91 @@ export class LetterGrid {
     };
   }
 
-  private sizeClassForCoordinate(x: number, y: number) {
-    const sizeClasses = ["size-sm", "size-md", "size-lg"];
-    return sizeClasses[Math.abs(x * 7 + y * 13 + x * y) % sizeClasses.length];
+  private fontSizeForCoordinate(x: number, y: number) {
+    const sizes = [28, 30, 32];
+    return sizes[Math.abs(x * 7 + y * 13 + x * y) % sizes.length];
   }
 
-  private renderVisibleCells() {
-    const cells: string[] = [];
+  private renderCanvas(camera: Camera) {
+    const canvas = this.root.querySelector<HTMLCanvasElement>(".letter-canvas");
+    const playfield = this.getPlayfield();
 
-    for (let row = 0; row < this.viewport.rows; row += 1) {
-      for (let column = 0; column < this.viewport.columns; column += 1) {
-        const worldColumn = this.viewport.originColumn + column;
-        const worldRow = this.viewport.originRow + row;
-        const cachedCell = this.cachedCells[worldRow * this.map.columns + worldColumn];
+    if (!canvas || !playfield || !this.world) return;
 
-        if (!cachedCell) {
-          cells.push(`<span class="tile-outside"> </span>`);
-          continue;
-        }
+    const pixelRatio = window.devicePixelRatio || 1;
+    const width = playfield.clientWidth;
+    const height = playfield.clientHeight;
+    const targetWidth = Math.round(width * pixelRatio);
+    const targetHeight = Math.round(height * pixelRatio);
 
-        cells.push(`<span class="${cachedCell.classes}">${cachedCell.char}</span>`);
-      }
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
     }
 
-    return cells.join("");
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
+    const ctx = canvas.getContext("2d");
+
+    if (!ctx) return;
+
+    ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    const startColumn = Math.max(0, Math.floor(camera.x / this.viewport.cellWidth) - 1);
+    const endColumn = Math.min(
+      this.map.columns - 1,
+      Math.ceil((camera.x + width) / this.viewport.cellWidth) + 1,
+    );
+    const startRow = Math.max(0, Math.floor(camera.y / this.viewport.cellHeight) - 1);
+    const endRow = Math.min(
+      this.map.rows - 1,
+      Math.ceil((camera.y + height) / this.viewport.cellHeight) + 1,
+    );
+
+    for (let row = startRow; row <= endRow; row += 1) {
+      for (let column = startColumn; column <= endColumn; column += 1) {
+        const cell = this.cachedCells[row * this.map.columns + column];
+
+        if (!cell) continue;
+
+        const x = column * this.viewport.cellWidth - camera.x + this.viewport.cellWidth / 2;
+        const y = row * this.viewport.cellHeight - camera.y + this.viewport.cellHeight / 2;
+        const isActive = column === this.activeCellIndex.column && row === this.activeCellIndex.row;
+
+        this.drawCell(ctx, cell, x, y, isActive);
+      }
+    }
+  }
+
+  private drawCell(
+    ctx: CanvasRenderingContext2D,
+    cell: CachedCell,
+    x: number,
+    y: number,
+    isActive: boolean,
+  ) {
+    ctx.font = `${cell.size}px "Courier New", Courier, ui-monospace, monospace`;
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
+
+    if (isActive) {
+      ctx.fillStyle = "#8f98a5";
+      ctx.shadowColor = "rgb(143 152 165 / 0.8)";
+      ctx.shadowBlur = 8;
+    } else if (cell.kind === "border") {
+      ctx.fillStyle = "#ff4d5e";
+      ctx.shadowColor = "rgb(255 77 94 / 0.85)";
+      ctx.shadowBlur = 8;
+    } else if (cell.kind === "outside") {
+      ctx.fillStyle = "#252b33";
+    } else {
+      ctx.fillStyle = this.settings.letterColor;
+    }
+
+    ctx.fillText(cell.char, x, y);
   }
 }

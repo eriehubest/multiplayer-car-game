@@ -56,60 +56,13 @@ body {
     Consolas, monospace;
 }
 
-.letter-field {
-  display: grid;
-  grid-template-columns: repeat(var(--columns), 1ch);
-  grid-template-rows: repeat(var(--rows), 1em);
+.letter-canvas {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  overflow: hidden;
-  padding: 0;
-  font-size: 30px;
-  line-height: 1;
-  letter-spacing: 0;
   user-select: none;
-  contain: layout style paint;
-  will-change: transform;
-}
-
-.letter-field span {
-  display: grid;
-  width: 100%;
-  place-items: center;
-  color: var(--letter-color);
-  font-family: inherit;
-}
-
-.letter-field .size-sm {
-  font-size: 28px;
-}
-
-.letter-field .size-md {
-  font-size: 30px;
-}
-
-.letter-field .size-lg {
-  font-size: 32px;
-}
-
-.letter-field .under-player {
-  color: #8f98a5;
-  text-shadow:
-    0 0 6px rgb(143 152 165 / 0.8),
-    0 0 14px rgb(143 152 165 / 0.45);
-}
-
-.letter-field .tile-border {
-  color: #ff4d5e;
-  font-size: 30px;
-  text-shadow:
-    0 0 6px rgb(255 77 94 / 0.85),
-    0 0 16px rgb(255 77 94 / 0.45);
-}
-
-.letter-field .tile-outside {
-  color: #252b33;
-  text-shadow: none;
+  pointer-events: none;
 }
 
 .player,
@@ -122,8 +75,11 @@ body {
     "Courier New", Courier, ui-monospace, "SFMono-Regular", Menlo, Monaco,
     Consolas, monospace;
   font-size: 34px;
-  font-weight: inherit;
+  font-style: italic;
+  font-weight: 800;
   line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
   pointer-events: none;
   transform: translate(-50%, -50%);
 }
