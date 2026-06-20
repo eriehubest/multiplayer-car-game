@@ -1,5 +1,5 @@
 import type { PlayerVehicle } from "../entities/PlayerVehicle";
-import type { WorldMap } from "../world/WorldMap";
+import type { RaceGateView, WorldMap } from "../world/WorldMap";
 
 export class Minimap {
   private context: CanvasRenderingContext2D | null = null;
@@ -38,6 +38,7 @@ export class Minimap {
     ctx.fillRect(0, 0, width, height);
 
     this.drawTrack(ctx, world, offsetX, offsetY, scale);
+    this.drawRaceGates(ctx, world, offsetX, offsetY, scale);
     this.drawPlayer(ctx, player, offsetX, offsetY, scale);
   }
 
@@ -68,6 +69,43 @@ export class Minimap {
     ctx.strokeStyle = "#20262f";
     ctx.lineWidth = world.getRoadHalfWidth() * 2 * scale;
     ctx.stroke();
+  }
+
+  private drawRaceGates(
+    ctx: CanvasRenderingContext2D,
+    world: WorldMap,
+    offsetX: number,
+    offsetY: number,
+    scale: number,
+  ) {
+    for (const gate of world.getVisibleRaceGates()) {
+      this.drawRaceGate(ctx, gate, offsetX, offsetY, scale);
+    }
+  }
+
+  private drawRaceGate(
+    ctx: CanvasRenderingContext2D,
+    gate: RaceGateView,
+    offsetX: number,
+    offsetY: number,
+    scale: number,
+  ) {
+    const color = gate.kind === "checkpoint"
+      ? "#45b8ff"
+      : gate.kind === "finish"
+        ? "#c8ff4d"
+        : "#58ff57";
+    const centerX = offsetX + gate.center.x * scale;
+    const centerY = offsetY + gate.center.y * scale;
+    const width = (gate.axis === "vertical" ? gate.halfThickness * 2 : gate.halfLength * 2) * scale;
+    const height = (gate.axis === "vertical" ? gate.halfLength * 2 : gate.halfThickness * 2) * scale;
+
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 7;
+    ctx.fillRect(centerX - width / 2, centerY - height / 2, width, height);
+    ctx.restore();
   }
 
   private drawPlayer(

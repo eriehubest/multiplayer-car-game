@@ -3,6 +3,9 @@ import { Vector2 } from "../math/Vector2";
 const VOIDTEXT = "void";
 const TRACKTEXT = "TRACK";
 const WALLTEXT = "WALL";
+const CHECKPOINTTEXT = "CHECKPOINT";
+const STARTINGLINETEXT = "STARTINGLINE";
+const FINISHLINETEXT = "FINISHLINE";
 export const BORDER_THICKNESS = 34;
 export const PLAYER_RADIUS = BORDER_THICKNESS / 2;
 
@@ -17,7 +20,7 @@ type Point = {
 
 export type WorldTile = {
   char: string;
-  kind: "letter" | "border" | "outside";
+  kind: "letter" | "border" | "outside" | "checkpoint" | "start" | "finish";
 };
 
 export type CircleResolution = {
@@ -25,6 +28,18 @@ export type CircleResolution = {
   x: number;
   y: number;
   normal: Vector2;
+};
+
+type RaceGate = {
+  center: Point;
+  axis: "horizontal" | "vertical";
+  halfLength: number;
+  halfThickness: number;
+  hitboxHalfThickness: number;
+};
+
+export type RaceGateView = RaceGate & {
+  kind: "checkpoint" | "start" | "finish";
 };
 
 export class WorldMap {
@@ -36,6 +51,9 @@ export class WorldMap {
   };
 
   private trackPoints: Point[] = [];
+  private startLine: RaceGate | null = null;
+  private checkpoints: RaceGate[] = [];
+  private activeCheckpointIndex = 0;
 
   constructor() {
     this.buildTrack();
@@ -66,6 +84,33 @@ export class WorldMap {
     return { char: this.getVoidCharacter(cellX, cellY), kind: "outside" };
   }
 
+  getRaceOverlayTile(cellX: number, cellY: number, cellWidth: number, cellHeight: number): WorldTile | null {
+    const x = (cellX + 0.5) * cellWidth;
+    const y = (cellY + 0.5) * cellHeight;
+    const lineText = this.isFinished() ? FINISHLINETEXT : STARTINGLINETEXT;
+    const baseTile = this.getTile(cellX, cellY, cellWidth, cellHeight);
+
+    if (baseTile.kind !== "letter") return null;
+
+    if (this.startLine && this.isPointOnRaceGate(x, y, this.startLine, cellWidth, cellHeight)) {
+      return {
+        char: this.textCharacterForGate(cellX, cellY, cellWidth, cellHeight, this.startLine, lineText),
+        kind: this.isFinished() ? "finish" : "start",
+      };
+    }
+
+    const checkpoint = this.checkpoints[this.activeCheckpointIndex];
+
+    if (checkpoint && this.isPointOnRaceGate(x, y, checkpoint, cellWidth, cellHeight)) {
+      return {
+        char: this.textCharacterForGate(cellX, cellY, cellWidth, cellHeight, checkpoint, CHECKPOINTTEXT),
+        kind: "checkpoint",
+      };
+    }
+
+    return null;
+  }
+
   getBounds() {
     return {
       minX: 0,
@@ -85,6 +130,56 @@ export class WorldMap {
 
   getTrackPoints() {
     return this.trackPoints.map((point) => ({ ...point }));
+  }
+
+  getCheckpointProgress() {
+    return {
+      active: Math.min(this.activeCheckpointIndex + 1, this.checkpoints.length),
+      completed: this.activeCheckpointIndex,
+      total: this.checkpoints.length,
+      finished: this.isFinished(),
+    };
+  }
+
+  getVisibleRaceGates(): RaceGateView[] {
+    const gates: RaceGateView[] = [];
+
+    if (this.startLine) {
+      gates.push({
+        ...this.copyGate(this.startLine),
+        kind: this.isFinished() ? "finish" : "start",
+      });
+    }
+
+    const checkpoint = this.checkpoints[this.activeCheckpointIndex];
+
+    if (checkpoint) {
+      gates.push({
+        ...this.copyGate(checkpoint),
+        kind: "checkpoint",
+      });
+    }
+
+    return gates;
+  }
+
+  updateRaceProgress(x: number, y: number, radius: number) {
+    const checkpoint = this.checkpoints[this.activeCheckpointIndex];
+
+    if (!checkpoint || !this.isPointInsideGate(x, y, checkpoint, radius, true)) return false;
+
+    this.activeCheckpointIndex += 1;
+    return true;
+  }
+
+  isOnStartLine(x: number, y: number, radius: number) {
+    return Boolean(
+      this.startLine && this.isPointInsideGate(x, y, this.startLine, radius, true),
+    );
+  }
+
+  isFinished() {
+    return this.activeCheckpointIndex >= this.checkpoints.length;
   }
 
   resolveCircle(x: number, y: number, radius: number): CircleResolution {
@@ -175,7 +270,7 @@ export class WorldMap {
 
   private buildTrack() {
     const rawPoints: Point[] = [
-      { x: 8, y: 42 },
+      { x: 8, y: 60 },
       { x: 14, y: 30 },
       { x: 52, y: 30 },
       { x: 66, y: 30 },
@@ -228,6 +323,37 @@ export class WorldMap {
       x: this.trackPoints[0].x,
       y: this.trackPoints[0].y,
     };
+    this.buildRaceGates();
+  }
+
+  private buildRaceGates() {
+    const lineHalfLength = ROAD_HALF_WIDTH + BORDER_THICKNESS * 1.2;
+    const halfThickness = BORDER_THICKNESS * 0.24;
+    const hitboxHalfThickness = BORDER_THICKNESS * 0.75;
+    const point = (x: number, y: number): Point => ({
+      x: x * SCALE + TRACK_PADDING,
+      y: y * SCALE + TRACK_PADDING,
+    });
+
+    this.startLine = {
+      center: point(9, 42),
+      axis: "horizontal",
+      halfLength: lineHalfLength,
+      halfThickness,
+      hitboxHalfThickness,
+    };
+
+    this.checkpoints = [
+      { center: point(36, 30), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: point(112, 8), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: point(162, 23), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: point(208, 82), axis: "horizontal", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: point(135, 90), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: point(128, 56), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: point(54, 120), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: point(54, 100), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+    ];
+    this.activeCheckpointIndex = Math.min(this.activeCheckpointIndex, this.checkpoints.length);
   }
 
   private distanceToTrack(x: number, y: number) {
@@ -286,6 +412,97 @@ export class WorldMap {
     const mixed = Math.abs(x + y * 2 + x * y) % WALLTEXT.length;
 
     return WALLTEXT[mixed];
+  }
+
+  private isPointInsideGate(
+    x: number,
+    y: number,
+    gate: RaceGate,
+    padding: number,
+    useHitbox = false,
+  ) {
+    const localX = Math.abs(x - gate.center.x);
+    const localY = Math.abs(y - gate.center.y);
+    const halfThickness = useHitbox ? gate.hitboxHalfThickness : gate.halfThickness;
+
+    if (gate.axis === "vertical") {
+      return (
+        localX <= halfThickness + padding &&
+        localY <= gate.halfLength + padding
+      );
+    }
+
+    return (
+      localX <= gate.halfLength + padding &&
+      localY <= halfThickness + padding
+    );
+  }
+
+  private isPointOnRaceGate(
+    x: number,
+    y: number,
+    gate: RaceGate,
+    cellWidth: number,
+    cellHeight: number,
+  ) {
+    const parallelPadding = Math.max(cellWidth, cellHeight) * 0.5;
+    const perpendicularPadding = Math.min(cellWidth, cellHeight) * 0.5;
+    const distance = this.distanceToTrack(x, y);
+
+    return (
+      distance <= ROAD_HALF_WIDTH + Math.max(cellWidth, cellHeight) * 0.25 &&
+      this.isPointInsideGateForRender(x, y, gate, parallelPadding, perpendicularPadding)
+    );
+  }
+
+  private isPointInsideGateForRender(
+    x: number,
+    y: number,
+    gate: RaceGate,
+    parallelPadding: number,
+    perpendicularPadding: number,
+  ) {
+    const localX = Math.abs(x - gate.center.x);
+    const localY = Math.abs(y - gate.center.y);
+
+    if (gate.axis === "vertical") {
+      return (
+        localX <= gate.halfThickness + perpendicularPadding &&
+        localY <= gate.halfLength + parallelPadding
+      );
+    }
+
+    return (
+      localX <= gate.halfLength + parallelPadding &&
+      localY <= gate.halfThickness + perpendicularPadding
+    );
+  }
+
+  private copyGate(gate: RaceGate): RaceGate {
+    return {
+      center: { ...gate.center },
+      axis: gate.axis,
+      halfLength: gate.halfLength,
+      halfThickness: gate.halfThickness,
+      hitboxHalfThickness: gate.hitboxHalfThickness,
+    };
+  }
+
+  private textCharacterForGate(
+    cellX: number,
+    cellY: number,
+    cellWidth: number,
+    cellHeight: number,
+    gate: RaceGate,
+    text: string,
+  ) {
+    const centerCellX = Math.round(gate.center.x / cellWidth);
+    const centerCellY = Math.round(gate.center.y / cellHeight);
+    const position = gate.axis === "vertical"
+      ? cellY - centerCellY
+      : cellX - centerCellX;
+
+    return text[Math.abs(position) % text.length];
   }
 
   private getVoidCharacter(x: number, y: number) {

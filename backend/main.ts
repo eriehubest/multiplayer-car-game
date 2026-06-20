@@ -3,7 +3,7 @@ const ROOM_BROADCAST_MS = 50;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
@@ -40,7 +40,16 @@ type ClientMessage = {
   name?: string;
 };
 
+type LeaderboardEntry = {
+  id: string;
+  name: string;
+  time: number;
+  createdAt: number;
+};
+
 const rooms = new Map<string, Room>();
+const memoryLeaderboard: LeaderboardEntry[] = [];
+let kvPromise: Promise<Deno.Kv | null> | null = null;
 
 function jsonResponse(data: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -53,7 +62,7 @@ function jsonResponse(data: unknown, init: ResponseInit = {}) {
   });
 }
 
-function handler(request: Request): Response {
+async function handler(request: Request): Promise<Response> {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
@@ -78,11 +87,125 @@ function handler(request: Request): Response {
     });
   }
 
+  if (url.pathname === "/api/leaderboard") {
+    if (request.method === "GET") {
+      return jsonResponse({ scores: await getLeaderboardScores() });
+    }
+
+    if (request.method === "POST") {
+      return saveLeaderboardScore(request);
+    }
+
+    return jsonResponse({ error: "Method not allowed" }, { status: 405 });
+  }
+
   if (url.pathname === "/ws") {
     return handleWebSocket(request, url);
   }
 
   return jsonResponse({ error: "Not found" }, { status: 404 });
+}
+
+async function saveLeaderboardScore(request: Request) {
+  const body = await parseJsonBody(request);
+  const score = parseLeaderboardScore(body);
+
+  if (!score) {
+    return jsonResponse({ error: "Invalid score" }, { status: 400 });
+  }
+
+  const entry: LeaderboardEntry = {
+    id: `${score.time.toFixed(3).padStart(12, "0")}-${Date.now()}-${crypto.randomUUID()}`,
+    name: normalizeLeaderboardName(score.name),
+    time: score.time,
+    createdAt: Date.now(),
+  };
+  const kv = await getKv();
+
+  if (kv) {
+    await kv.set(["leaderboard", entry.id], entry);
+  } else {
+    memoryLeaderboard.push(entry);
+  }
+
+  return jsonResponse({ score: entry, scores: await getLeaderboardScores() }, { status: 201 });
+}
+
+async function getLeaderboardScores() {
+  const kv = await getKv();
+  const scores: LeaderboardEntry[] = [];
+
+  if (kv) {
+    for await (const entry of kv.list<LeaderboardEntry>({ prefix: ["leaderboard"] })) {
+      scores.push(entry.value);
+    }
+  } else {
+    scores.push(...memoryLeaderboard);
+  }
+
+  return scores
+    .filter(isLeaderboardEntry)
+    .sort((a, b) => a.time - b.time)
+    .slice(0, 10);
+}
+
+function getKv() {
+  if (!("openKv" in Deno) || typeof Deno.openKv !== "function") {
+    return Promise.resolve(null);
+  }
+
+  kvPromise ??= Deno.openKv().catch((error) => {
+    console.warn("Deno KV unavailable, falling back to in-memory leaderboard", error);
+    return null;
+  });
+
+  return kvPromise;
+}
+
+async function parseJsonBody(request: Request) {
+  try {
+    return await request.json();
+  } catch {
+    return null;
+  }
+}
+
+function parseLeaderboardScore(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+
+  const candidate = value as Record<string, unknown>;
+
+  if (typeof candidate.name !== "string" || typeof candidate.time !== "number") {
+    return null;
+  }
+
+  if (!Number.isFinite(candidate.time) || candidate.time <= 0 || candidate.time > 3_600_000) {
+    return null;
+  }
+
+  return {
+    name: candidate.name,
+    time: Math.round(candidate.time),
+  };
+}
+
+function normalizeLeaderboardName(value: string) {
+  const name = value.trim().replace(/\s+/g, " ");
+
+  return (name || "player").slice(0, 18);
+}
+
+function isLeaderboardEntry(value: unknown): value is LeaderboardEntry {
+  if (!value || typeof value !== "object") return false;
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.name === "string" &&
+    typeof candidate.time === "number" &&
+    typeof candidate.createdAt === "number"
+  );
 }
 
 function handleWebSocket(request: Request, url: URL): Response {

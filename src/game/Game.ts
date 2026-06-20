@@ -8,6 +8,15 @@ import { Minimap } from "../ui/Minimap";
 import { Camera } from "../world/Camera";
 import { PLAYER_RADIUS, WorldMap } from "../world/WorldMap";
 
+type LeaderboardEntry = {
+  id: string;
+  name: string;
+  time: number;
+  createdAt: number;
+};
+
+const DEFAULT_API_URL = "https://multiplayer-car-game-rzp8s3vk94sj.eriehubest.deno.net";
+
 export class Game {
   private settings = createDefaultSettings();
   private input = new InputState();
@@ -20,6 +29,14 @@ export class Game {
   private minimap: Minimap | null = null;
   private isPlayerPlaced = false;
   private lastFrame = performance.now();
+  private raceTimer = {
+    status: "idle" as "idle" | "running" | "finished",
+    startTime: 0,
+    finalElapsed: 0,
+  };
+  private hasSavedCurrentScore = false;
+  private leaderboardEntries: LeaderboardEntry[] = [];
+  private leaderboardError = "";
 
   constructor(private root: HTMLElement) {
     this.grid = new LetterGrid(root, this.settings);
@@ -50,8 +67,11 @@ export class Game {
     if (this.isDebugEnabled()) {
       this.bindDebugPanel();
     }
+    this.bindLeaderboard();
     this.renderPlayer();
     this.renderMinimap();
+    this.renderRaceHud();
+    this.renderLeaderboard();
     this.grid.updateActiveLetter(this.player);
     this.debugPanel.updateReadout(this.player);
   }
@@ -110,12 +130,14 @@ export class Game {
       const bounds = playfield.getBoundingClientRect();
 
       this.updatePlayerWithCollision(deltaSeconds);
+      this.updateRaceProgress(now);
       this.camera.follow(this.player, bounds, this.world.getBounds());
       this.camera.update(deltaSeconds);
       this.grid.updateCameraOffset(this.camera);
       this.renderPlayer();
       this.syncMultiplayer(now);
       this.renderMinimap();
+      this.renderRaceHud(now);
       this.grid.updateActiveLetter(this.player);
       this.debugPanel.updateReadout(this.player);
     }
@@ -214,7 +236,229 @@ export class Game {
     }
   }
 
+  private updateRaceProgress(now: number) {
+    const isOnStartLine = this.world.isOnStartLine(this.player.x, this.player.y, PLAYER_RADIUS);
+
+    if (this.raceTimer.status === "idle" && isOnStartLine) {
+      this.raceTimer.status = "running";
+      this.raceTimer.startTime = now;
+    }
+
+    if (this.raceTimer.status === "running") {
+      this.world.updateRaceProgress(this.player.x, this.player.y, PLAYER_RADIUS);
+
+      if (this.world.isFinished() && isOnStartLine) {
+        this.raceTimer.status = "finished";
+        this.raceTimer.finalElapsed = now - this.raceTimer.startTime;
+        this.hasSavedCurrentScore = false;
+      }
+    }
+  }
+
+  private renderRaceHud(now = performance.now()) {
+    const element = this.grid.getRaceHudElement();
+
+    if (!element) return;
+
+    const progress = this.world.getCheckpointProgress();
+    const elapsed = this.getRaceElapsed(now);
+    const finalTime = this.raceTimer.status === "finished"
+      ? this.formatSeconds(this.raceTimer.finalElapsed)
+      : "--.--";
+
+    element.innerHTML = `
+      <div>
+        <span>checkpoints</span>
+        <strong>${progress.completed}/${progress.total}</strong>
+      </div>
+      <div>
+        <span>speed</span>
+        <strong>${Math.round(this.player.speed)}px/s</strong>
+      </div>
+      <div>
+        <span>time</span>
+        <strong>${this.formatSeconds(elapsed)}</strong>
+      </div>
+      <div>
+        <span>final</span>
+        <strong>${finalTime}</strong>
+      </div>
+    `;
+  }
+
+  private bindLeaderboard() {
+    this.grid.getLeaderboardButton()?.addEventListener("click", () => {
+      const panel = this.grid.getLeaderboardPanel();
+
+      if (panel) panel.hidden = false;
+      void this.refreshLeaderboard();
+    });
+
+    this.grid.getLeaderboardCloseButton()?.addEventListener("click", () => {
+      const panel = this.grid.getLeaderboardPanel();
+
+      if (panel) panel.hidden = true;
+    });
+
+    this.grid.getLeaderboardPanel()?.addEventListener("click", (event) => {
+      if (event.target !== event.currentTarget) return;
+
+      this.grid.getLeaderboardPanel()!.hidden = true;
+    });
+
+    this.grid.getLeaderboardForm()?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this.saveLeaderboardScore();
+    });
+  }
+
+  private renderLeaderboard() {
+    const list = this.grid.getLeaderboardList();
+    const note = this.grid.getLeaderboardNote();
+    const input = this.grid.getLeaderboardNameInput();
+    const formButton = this.grid.getLeaderboardForm()?.querySelector<HTMLButtonElement>("button");
+    const entries = this.leaderboardEntries;
+
+    if (list) {
+      list.innerHTML = entries.length > 0
+        ? entries.map((entry) => `
+          <li>
+            ${this.escapeHtml(entry.name)}
+            <span>${this.formatSeconds(entry.time)}</span>
+          </li>
+        `).join("")
+        : `<li><span>no scores yet</span></li>`;
+    }
+
+    const canSave = this.raceTimer.status === "finished" && !this.hasSavedCurrentScore;
+
+    if (input) {
+      input.disabled = !canSave;
+      input.placeholder = canSave ? "name" : "finish a run first";
+    }
+
+    if (formButton) {
+      formButton.disabled = !canSave;
+    }
+
+    if (note) {
+      if (this.leaderboardError) {
+        note.textContent = this.leaderboardError;
+      } else {
+        note.textContent = canSave
+          ? `current score: ${this.formatSeconds(this.raceTimer.finalElapsed)}`
+          : this.raceTimer.status === "finished"
+            ? "score saved"
+            : "finish the race to save a score";
+      }
+    }
+  }
+
+  private async saveLeaderboardScore() {
+    const input = this.grid.getLeaderboardNameInput();
+
+    if (!input || this.raceTimer.status !== "finished" || this.hasSavedCurrentScore) return;
+
+    const name = input.value.trim();
+
+    if (!name) return;
+
+    try {
+      const response = await fetch(`${getApiUrl()}/api/leaderboard`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          time: this.raceTimer.finalElapsed,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Leaderboard save failed: ${response.status}`);
+      }
+
+      const data = await response.json() as { scores?: unknown };
+
+      this.leaderboardEntries = this.parseLeaderboardEntries(data.scores);
+      this.leaderboardError = "";
+      input.value = "";
+      this.hasSavedCurrentScore = true;
+    } catch {
+      this.leaderboardError = "leaderboard unavailable";
+    }
+
+    this.renderLeaderboard();
+  }
+
+  private async refreshLeaderboard() {
+    try {
+      const response = await fetch(`${getApiUrl()}/api/leaderboard`);
+
+      if (!response.ok) {
+        throw new Error(`Leaderboard fetch failed: ${response.status}`);
+      }
+
+      const data = await response.json() as { scores?: unknown };
+
+      this.leaderboardEntries = this.parseLeaderboardEntries(data.scores);
+      this.leaderboardError = "";
+    } catch {
+      this.leaderboardError = "leaderboard unavailable";
+    }
+
+    this.renderLeaderboard();
+  }
+
+  private parseLeaderboardEntries(value: unknown) {
+    if (!Array.isArray(value)) return [];
+
+    return value
+      .filter((entry): entry is LeaderboardEntry => (
+        entry &&
+        typeof entry === "object" &&
+        typeof (entry as LeaderboardEntry).id === "string" &&
+        typeof (entry as LeaderboardEntry).name === "string" &&
+        typeof (entry as LeaderboardEntry).time === "number" &&
+        typeof (entry as LeaderboardEntry).createdAt === "number"
+      ))
+      .sort((a, b) => a.time - b.time)
+      .slice(0, 10);
+  }
+
+  private getRaceElapsed(now: number) {
+    if (this.raceTimer.status === "idle") return 0;
+    if (this.raceTimer.status === "finished") return this.raceTimer.finalElapsed;
+
+    return now - this.raceTimer.startTime;
+  }
+
+  private formatSeconds(milliseconds: number) {
+    return `${(milliseconds / 1000).toFixed(2)}s`;
+  }
+
+  private escapeHtml(value: string) {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   private isDebugEnabled() {
     return window.location.hash === "#debug";
   }
+}
+
+function getApiUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const override = params.get("api");
+
+  if (override) return override;
+
+  if (window.location.hostname === "localhost") {
+    return "http://localhost:8000";
+  }
+
+  return DEFAULT_API_URL;
 }

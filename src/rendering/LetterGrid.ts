@@ -1,11 +1,11 @@
 import type { GameSettings } from "../config/gameSettings";
 import type { PlayerVehicle } from "../entities/PlayerVehicle";
 import type { Camera } from "../world/Camera";
-import type { WorldMap } from "../world/WorldMap";
+import type { WorldMap, WorldTile } from "../world/WorldMap";
 
 type CachedCell = {
   char: string;
-  kind: "letter" | "border" | "outside";
+  kind: WorldTile["kind"];
   size: number;
 };
 
@@ -84,6 +84,22 @@ export class LetterGrid {
           <section class="remote-players" aria-label="remote players"></section>
           <span class="player" aria-label="player">car</span>
           <canvas class="minimap" aria-label="Track minimap"></canvas>
+          <section class="race-hud" aria-label="Race status"></section>
+          <button class="leaderboard-button" type="button">leaderboard</button>
+          <section class="leaderboard-panel" aria-label="Leaderboard" hidden>
+            <div class="leaderboard-card">
+              <div class="leaderboard-header">
+                <h2>leaderboard</h2>
+                <button class="leaderboard-close" type="button" aria-label="Close leaderboard">x</button>
+              </div>
+              <ol class="leaderboard-list"></ol>
+              <form class="leaderboard-form">
+                <input class="leaderboard-name" type="text" maxlength="18" placeholder="name" autocomplete="name" />
+                <button type="submit">save score</button>
+              </form>
+              <p class="leaderboard-note"></p>
+            </div>
+          </section>
         </section>
 
         ${debugPanelMarkup}
@@ -111,6 +127,38 @@ export class LetterGrid {
 
   getMinimapElement() {
     return this.root.querySelector<HTMLCanvasElement>(".minimap");
+  }
+
+  getRaceHudElement() {
+    return this.root.querySelector<HTMLElement>(".race-hud");
+  }
+
+  getLeaderboardButton() {
+    return this.root.querySelector<HTMLButtonElement>(".leaderboard-button");
+  }
+
+  getLeaderboardPanel() {
+    return this.root.querySelector<HTMLElement>(".leaderboard-panel");
+  }
+
+  getLeaderboardCloseButton() {
+    return this.root.querySelector<HTMLButtonElement>(".leaderboard-close");
+  }
+
+  getLeaderboardForm() {
+    return this.root.querySelector<HTMLFormElement>(".leaderboard-form");
+  }
+
+  getLeaderboardNameInput() {
+    return this.root.querySelector<HTMLInputElement>(".leaderboard-name");
+  }
+
+  getLeaderboardList() {
+    return this.root.querySelector<HTMLOListElement>(".leaderboard-list");
+  }
+
+  getLeaderboardNote() {
+    return this.root.querySelector<HTMLElement>(".leaderboard-note");
   }
 
   getCellSize() {
@@ -212,11 +260,23 @@ export class LetterGrid {
 
         if (!cell) continue;
 
+        const overlay = this.world.getRaceOverlayTile(
+          column,
+          row,
+          this.viewport.cellWidth,
+          this.viewport.cellHeight,
+        );
         const x = column * this.viewport.cellWidth - camera.x + this.viewport.cellWidth / 2;
         const y = row * this.viewport.cellHeight - camera.y + this.viewport.cellHeight / 2;
         const isActive = column === this.activeCellIndex.column && row === this.activeCellIndex.row;
 
-        this.drawCell(ctx, cell, x, y, isActive);
+        this.drawCell(
+          ctx,
+          overlay ? { ...overlay, size: cell.size } : cell,
+          x,
+          y,
+          isActive,
+        );
       }
     }
   }
@@ -236,6 +296,18 @@ export class LetterGrid {
       ctx.fillStyle = "#8f98a5";
       ctx.shadowColor = "rgb(143 152 165 / 0.8)";
       ctx.shadowBlur = 8;
+    } else if (cell.kind === "checkpoint") {
+      ctx.fillStyle = "#45b8ff";
+      ctx.shadowColor = "rgb(69 184 255 / 0.85)";
+      ctx.shadowBlur = 10;
+    } else if (cell.kind === "start") {
+      ctx.fillStyle = "#58ff57";
+      ctx.shadowColor = "rgb(88 255 87 / 0.85)";
+      ctx.shadowBlur = 10;
+    } else if (cell.kind === "finish") {
+      ctx.fillStyle = "#c8ff4d";
+      ctx.shadowColor = "rgb(200 255 77 / 0.9)";
+      ctx.shadowBlur = 12;
     } else if (cell.kind === "border") {
       ctx.fillStyle = "#ff4d5e";
       ctx.shadowColor = "rgb(255 77 94 / 0.85)";
