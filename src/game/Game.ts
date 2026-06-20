@@ -15,7 +15,7 @@ type LeaderboardEntry = {
   createdAt: number;
 };
 
-const DEFAULT_API_URL = "https://multiplayer-car-game-rzp8s3vk94sj.eriehubest.deno.net";
+const DEFAULT_API_URL = "https://multiplayer-car-game-sfaz423w96tp.eriehubest.deno.net";
 
 export class Game {
   private settings = createDefaultSettings();
