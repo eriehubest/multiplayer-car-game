@@ -9,17 +9,41 @@ export type RemotePlayerState = {
   updatedAt: number;
 };
 
+export type StarState = {
+  id: string;
+  x: number;
+  y: number;
+};
+
+export type StarMatchState = {
+  endsAt: number;
+  stars: StarState[];
+  scores: Record<string, number>;
+};
+
 type RoomStateMessage = {
   type: "room:state";
   players: RemotePlayerState[];
+  starMatch?: StarMatchState | null;
 };
 
 type WelcomeMessage = {
   type: "player:welcome";
   id: string;
+  levelId?: string;
 };
 
-type ServerMessage = RoomStateMessage | WelcomeMessage;
+type RoomLevelMessage = {
+  type: "room:level";
+  levelId: string;
+};
+
+type StarStateMessage = {
+  type: "star:state";
+  starMatch: StarMatchState;
+};
+
+type ServerMessage = RoomStateMessage | WelcomeMessage | RoomLevelMessage | StarStateMessage;
 
 type LocalPlayerState = {
   name: string;
@@ -41,6 +65,9 @@ export class MultiplayerClient {
   private lastSentAt = 0;
   private reconnectTimer: number | null = null;
   private shouldReconnect = true;
+  private onLevelChange: ((levelId: string) => void) | null = null;
+  private onStarMatchChange: ((state: StarMatchState | null) => void) | null = null;
+  private pendingLevelId: string | null = null;
 
   constructor(
     private roomId = getRoomId(),
@@ -49,7 +76,9 @@ export class MultiplayerClient {
   ) {}
 
   connect() {
-    if (this.socket || !this.shouldReconnect) return;
+    this.shouldReconnect = true;
+
+    if (this.socket) return;
 
     const url = new URL(this.socketUrl);
     url.searchParams.set("roomId", this.roomId);
@@ -57,9 +86,42 @@ export class MultiplayerClient {
 
     this.socket = new WebSocket(url);
 
+    this.socket.addEventListener("open", () => {
+      if (this.pendingLevelId) {
+        this.sendLevel(this.pendingLevelId);
+      }
+    });
     this.socket.addEventListener("message", (event) => this.handleMessage(event.data));
     this.socket.addEventListener("close", () => this.handleDisconnect());
     this.socket.addEventListener("error", () => this.socket?.close());
+  }
+
+  configure(options: {
+    roomId: string;
+    playerName: string;
+    onLevelChange?: (levelId: string) => void;
+    onStarMatchChange?: (state: StarMatchState | null) => void;
+  }) {
+    this.disconnect();
+    this.roomId = options.roomId;
+    this.playerName = options.playerName;
+    this.onLevelChange = options.onLevelChange ?? null;
+    this.onStarMatchChange = options.onStarMatchChange ?? null;
+    this.shouldReconnect = true;
+  }
+
+  setLevel(levelId: string) {
+    this.pendingLevelId = levelId;
+    this.sendLevel(levelId);
+  }
+
+  private sendLevel(levelId: string) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+
+    this.socket.send(JSON.stringify({
+      type: "room:level",
+      levelId,
+    }));
   }
 
   sendPlayerState(state: LocalPlayerState, now = performance.now()) {
@@ -70,6 +132,15 @@ export class MultiplayerClient {
     this.socket.send(JSON.stringify({
       type: "player:update",
       ...state,
+    }));
+  }
+
+  collectStar(starId: string) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+
+    this.socket.send(JSON.stringify({
+      type: "star:collect",
+      starId,
     }));
   }
 
@@ -87,6 +158,8 @@ export class MultiplayerClient {
 
     this.socket?.close();
     this.socket = null;
+    this.playerId = null;
+    this.remotePlayers.clear();
   }
 
   private handleMessage(data: unknown) {
@@ -97,6 +170,12 @@ export class MultiplayerClient {
 
       if (message.type === "player:welcome") {
         this.playerId = message.id;
+        if (message.levelId) this.onLevelChange?.(message.levelId);
+        return;
+      }
+
+      if (message.type === "room:level") {
+        this.onLevelChange?.(message.levelId);
         return;
       }
 
@@ -108,6 +187,15 @@ export class MultiplayerClient {
             this.remotePlayers.set(player.id, player);
           }
         }
+
+        if ("starMatch" in message) {
+          this.onStarMatchChange?.(message.starMatch ?? null);
+        }
+        return;
+      }
+
+      if (message.type === "star:state") {
+        this.onStarMatchChange?.(message.starMatch);
       }
     } catch {
       // Ignore malformed network messages; the next room state will replace it.

@@ -3,6 +3,7 @@ import type { PlayerVehicle } from "../entities/PlayerVehicle";
 
 type DebugPanelCallbacks = {
   onLetterColorChange: () => void;
+  onTrackFontChange: () => void;
   onPlayerColorChange: () => void;
 };
 
@@ -17,6 +18,17 @@ export class DebugPanel {
         <label>
           <span>letter color</span>
           <input id="letter-color" type="color" value="${this.settings.letterColor}" />
+        </label>
+
+        <label>
+          <span>track font</span>
+          <select id="track-font">
+            ${this.renderFontOption("\"Courier New\", Courier, ui-monospace, monospace", "Courier")}
+            ${this.renderFontOption("Menlo, Monaco, Consolas, monospace", "Menlo")}
+            ${this.renderFontOption("Georgia, \"Times New Roman\", serif", "Georgia")}
+            ${this.renderFontOption("Impact, \"Arial Narrow\", sans-serif", "Impact")}
+            ${this.renderFontOption("\"Trebuchet MS\", Arial, sans-serif", "Trebuchet")}
+          </select>
         </label>
 
         <label>
@@ -64,6 +76,7 @@ export class DebugPanel {
 
   bind(callbacks: DebugPanelCallbacks) {
     const letterColor = document.querySelector<HTMLInputElement>("#letter-color");
+    const trackFont = document.querySelector<HTMLSelectElement>("#track-font");
     const playerColor = document.querySelector<HTMLInputElement>("#player-color");
     const maxSpeed = document.querySelector<HTMLInputElement>("#max-speed");
     const acceleration = document.querySelector<HTMLInputElement>("#acceleration");
@@ -74,6 +87,11 @@ export class DebugPanel {
     letterColor?.addEventListener("input", () => {
       this.settings.letterColor = letterColor.value;
       callbacks.onLetterColorChange();
+    });
+
+    trackFont?.addEventListener("change", () => {
+      this.settings.trackFontFamily = trackFont.value;
+      callbacks.onTrackFontChange();
     });
 
     playerColor?.addEventListener("input", () => {
@@ -136,6 +154,12 @@ export class DebugPanel {
 
   private updateControlLabel(input: HTMLInputElement, value: string) {
     input.previousElementSibling?.querySelector("strong")?.replaceChildren(value);
+  }
+
+  private renderFontOption(value: string, label: string) {
+    const selected = value === this.settings.trackFontFamily ? " selected" : "";
+
+    return `<option value="${value}"${selected}>${label}</option>`;
   }
 
   private formatVector(x: number, y: number) {

@@ -1,4 +1,5 @@
 import { Vector2 } from "../math/Vector2";
+import type { CarFootprint } from "../entities/PlayerVehicle";
 
 const VOIDTEXT = "void";
 const TRACKTEXT = "TRACK";
@@ -6,11 +7,15 @@ const WALLTEXT = "WALL";
 const CHECKPOINTTEXT = "CHECKPOINT";
 const STARTINGLINETEXT = "STARTINGLINE";
 const FINISHLINETEXT = "FINISHLINE";
+const HOLETEXT = "HOLE";
+const BOOSTTEXT = "BOOST";
+const TRAPTEXT = "TRAP";
 export const BORDER_THICKNESS = 34;
 export const PLAYER_RADIUS = BORDER_THICKNESS / 2;
 
 const SCALE = BORDER_THICKNESS / 2;
 const ROAD_HALF_WIDTH = SCALE * 9;
+const CHALLENGE_ROAD_HALF_WIDTH = BORDER_THICKNESS;
 const TRACK_PADDING = SCALE * 12;
 
 type Point = {
@@ -20,7 +25,7 @@ type Point = {
 
 export type WorldTile = {
   char: string;
-  kind: "letter" | "border" | "outside" | "checkpoint" | "start" | "finish";
+  kind: "letter" | "border" | "outside" | "checkpoint" | "start" | "finish" | "hole" | "boost" | "trap";
 };
 
 export type CircleResolution = {
@@ -38,8 +43,41 @@ type RaceGate = {
   hitboxHalfThickness: number;
 };
 
+type Hole = {
+  center: Point;
+  radius: number;
+};
+
+type HazardZone = {
+  center: Point;
+  radius: number;
+  kind: "boost" | "trap";
+};
+
+type LevelDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  mode: "race" | "stars";
+  roadHalfWidth: number;
+  hasWalls: boolean;
+  points: Point[];
+  spawn: Point;
+  startLine: Omit<RaceGate, "center"> & { center: Point };
+  checkpoints: Array<Omit<RaceGate, "center"> & { center: Point }>;
+  holes: Hole[];
+  hazards: HazardZone[];
+};
+
 export type RaceGateView = RaceGate & {
   kind: "checkpoint" | "start" | "finish";
+};
+
+export type LevelSummary = {
+  id: string;
+  name: string;
+  description: string;
+  mode: "race" | "stars";
 };
 
 export class WorldMap {
@@ -53,7 +91,11 @@ export class WorldMap {
   private trackPoints: Point[] = [];
   private startLine: RaceGate | null = null;
   private checkpoints: RaceGate[] = [];
+  private holes: Hole[] = [];
+  private hazards: HazardZone[] = [];
   private activeCheckpointIndex = 0;
+  private activeLevelId = "loop";
+  private roadHalfWidth = ROAD_HALF_WIDTH;
 
   constructor() {
     this.buildTrack();
@@ -73,11 +115,25 @@ export class WorldMap {
 
     const distance = this.distanceToTrack(x, y);
 
-    if (distance <= ROAD_HALF_WIDTH) {
+    if (distance <= this.roadHalfWidth && this.isPointInsideHole(x, y)) {
+      return { char: this.holeCharacterForCoordinate(cellX, cellY), kind: "hole" };
+    }
+
+    if (distance <= this.roadHalfWidth) {
+      const hazard = this.getHazardAtPoint(x, y);
+
+      if (hazard?.kind === "boost") {
+        return { char: this.effectCharacterForCoordinate(cellX, cellY, BOOSTTEXT), kind: "boost" };
+      }
+
+      if (hazard?.kind === "trap") {
+        return { char: this.effectCharacterForCoordinate(cellX, cellY, TRAPTEXT), kind: "trap" };
+      }
+
       return { char: this.letterForCoordinate(cellX, cellY), kind: "letter" };
     }
 
-    if (distance <= ROAD_HALF_WIDTH + BORDER_THICKNESS) {
+    if (this.getActiveLevel().hasWalls && distance <= this.roadHalfWidth + BORDER_THICKNESS) {
       return { char: this.wallCharacterForCoordinate(cellX, cellY), kind: "border" };
     }
 
@@ -125,11 +181,56 @@ export class WorldMap {
   }
 
   getRoadHalfWidth() {
-    return ROAD_HALF_WIDTH;
+    return this.roadHalfWidth;
   }
 
   getTrackPoints() {
     return this.trackPoints.map((point) => ({ ...point }));
+  }
+
+  getHoles() {
+    return this.holes.map((hole) => ({
+      center: { ...hole.center },
+      radius: hole.radius,
+    }));
+  }
+
+  getHazards() {
+    return this.hazards.map((hazard) => ({
+      center: { ...hazard.center },
+      radius: hazard.radius,
+      kind: hazard.kind,
+    }));
+  }
+
+  getLevels(): LevelSummary[] {
+    return LEVELS.map((level) => ({
+      id: level.id,
+      name: level.name,
+      description: level.description,
+      mode: level.mode,
+    }));
+  }
+
+  isStarArena() {
+    return this.getActiveLevel().mode === "stars";
+  }
+
+  getCurrentLevel() {
+    return this.getLevels().find((level) => level.id === this.activeLevelId) ?? this.getLevels()[0];
+  }
+
+  setLevel(levelId: string) {
+    if (!LEVELS.some((level) => level.id === levelId)) return false;
+
+    this.activeLevelId = levelId;
+    this.resetRaceProgress();
+    this.buildTrack();
+    return true;
+  }
+
+  resetRaceProgress() {
+    this.activeCheckpointIndex = 0;
   }
 
   getCheckpointProgress() {
@@ -182,12 +283,36 @@ export class WorldMap {
     return this.activeCheckpointIndex >= this.checkpoints.length;
   }
 
+  isInHole(x: number, y: number, radius: number) {
+    return this.holes.some((hole) => (
+      Math.hypot(x - hole.center.x, y - hole.center.y) <= hole.radius + radius * 0.25
+    ));
+  }
+
+  isFootprintInHole(footprint: CarFootprint) {
+    const samplePoints = [footprint.center, ...footprint.corners];
+
+    return samplePoints.every((point) => this.isPointInsideHole(point.x, point.y));
+  }
+
+  isFootprintFullyInVoid(footprint: CarFootprint) {
+    if (this.getActiveLevel().hasWalls) return false;
+
+    const samplePoints = [footprint.center, ...footprint.corners];
+
+    return samplePoints.every((point) => this.distanceToTrack(point.x, point.y) > this.roadHalfWidth);
+  }
+
+  getSurfaceEffect(x: number, y: number) {
+    return this.getHazardAtPoint(x, y)?.kind ?? "normal";
+  }
+
   resolveCircle(x: number, y: number, radius: number): CircleResolution {
     const nearest = this.nearestPointOnTrack(x, y);
     const dx = x - nearest.x;
     const dy = y - nearest.y;
     const distance = Math.hypot(dx, dy);
-    const maxDistance = ROAD_HALF_WIDTH - radius;
+    const maxDistance = this.roadHalfWidth - radius;
 
     if (distance <= maxDistance) {
       return { collided: false, x, y, normal: new Vector2() };
@@ -269,91 +394,60 @@ export class WorldMap {
   }
 
   private buildTrack() {
-    const rawPoints: Point[] = [
-      { x: 8, y: 60 },
-      { x: 14, y: 30 },
-      { x: 52, y: 30 },
-      { x: 66, y: 30 },
-      { x: 78, y: 16 },
-      { x: 100, y: 8 },
-      { x: 124, y: 8 },
-      { x: 142, y: 23 },
-      { x: 172, y: 23 },
-      { x: 196, y: 34 },
-      { x: 208, y: 54 },
-      { x: 208, y: 112 },
-      { x: 194, y: 132 },
-      { x: 126, y: 132 },
-      { x: 106, y: 122 },
-      { x: 106, y: 100 },
-      { x: 120, y: 90 },
-      { x: 166, y: 90 },
-      { x: 180, y: 78 },
-      { x: 180, y: 66 },
-      { x: 168, y: 56 },
-      { x: 116, y: 56 },
-      { x: 96, y: 66 },
-      { x: 86, y: 78 },
-      { x: 42, y: 78 },
-      { x: 28, y: 90 },
-      { x: 28, y: 110 },
-      { x: 42, y: 122 },
-      { x: 82, y: 122 },
-      { x: 96, y: 112 },
-      { x: 96, y: 104 },
-      { x: 84, y: 100 },
-      { x: 50, y: 100 },
-      { x: 28, y: 92 },
-      { x: 14, y: 78 },
-      { x: 8, y: 60 },
-      { x: 8, y: 42 },
-    ];
+    const level = this.getActiveLevel();
 
-    this.trackPoints = rawPoints.map((point) => ({
-      x: point.x * SCALE + TRACK_PADDING,
-      y: point.y * SCALE + TRACK_PADDING,
+    this.roadHalfWidth = level.roadHalfWidth;
+    this.trackPoints = level.points.map((point) => this.scalePoint(point));
+    this.holes = level.holes.map((hole) => ({
+      center: this.scalePoint(hole.center),
+      radius: hole.radius * SCALE,
+    }));
+    this.hazards = level.hazards.map((hazard) => ({
+      center: this.scalePoint(hazard.center),
+      radius: hazard.radius * SCALE,
+      kind: hazard.kind,
     }));
 
     const xs = this.trackPoints.map((point) => point.x);
     const ys = this.trackPoints.map((point) => point.y);
+    const holeXs = this.holes.flatMap((hole) => [hole.center.x - hole.radius, hole.center.x + hole.radius]);
+    const holeYs = this.holes.flatMap((hole) => [hole.center.y - hole.radius, hole.center.y + hole.radius]);
+    const hazardXs = this.hazards.flatMap((hazard) => [hazard.center.x - hazard.radius, hazard.center.x + hazard.radius]);
+    const hazardYs = this.hazards.flatMap((hazard) => [hazard.center.y - hazard.radius, hazard.center.y + hazard.radius]);
 
-    this.width = Math.max(...xs) + TRACK_PADDING;
-    this.height = Math.max(...ys) + TRACK_PADDING;
-    this.spawn = {
-      x: this.trackPoints[0].x,
-      y: this.trackPoints[0].y,
-    };
-    this.buildRaceGates();
+    const edgePadding = TRACK_PADDING + this.roadHalfWidth + BORDER_THICKNESS;
+
+    this.width = Math.max(...xs, ...holeXs, ...hazardXs) + edgePadding;
+    this.height = Math.max(...ys, ...holeYs, ...hazardYs) + edgePadding;
+    this.spawn = this.scalePoint(level.spawn);
+    this.buildRaceGates(level);
   }
 
-  private buildRaceGates() {
-    const lineHalfLength = ROAD_HALF_WIDTH + BORDER_THICKNESS * 1.2;
-    const halfThickness = BORDER_THICKNESS * 0.24;
-    const hitboxHalfThickness = BORDER_THICKNESS * 0.75;
-    const point = (x: number, y: number): Point => ({
-      x: x * SCALE + TRACK_PADDING,
-      y: y * SCALE + TRACK_PADDING,
-    });
-
-    this.startLine = {
-      center: point(9, 42),
-      axis: "horizontal",
-      halfLength: lineHalfLength,
-      halfThickness,
-      hitboxHalfThickness,
-    };
-
-    this.checkpoints = [
-      { center: point(36, 30), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
-      { center: point(112, 8), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
-      { center: point(162, 23), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
-      { center: point(208, 82), axis: "horizontal", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
-      { center: point(135, 90), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
-      { center: point(128, 56), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
-      { center: point(54, 120), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
-      { center: point(54, 100), axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
-    ];
+  private buildRaceGates(level: LevelDefinition) {
+    this.startLine = this.scaleRaceGate(level.startLine);
+    this.checkpoints = level.checkpoints.map((checkpoint) => this.scaleRaceGate(checkpoint));
     this.activeCheckpointIndex = Math.min(this.activeCheckpointIndex, this.checkpoints.length);
+  }
+
+  private getActiveLevel() {
+    return LEVELS.find((level) => level.id === this.activeLevelId) ?? LEVELS[0];
+  }
+
+  private scalePoint(point: Point) {
+    return {
+      x: point.x * SCALE + TRACK_PADDING,
+      y: point.y * SCALE + TRACK_PADDING,
+    };
+  }
+
+  private scaleRaceGate(gate: Omit<RaceGate, "center"> & { center: Point }): RaceGate {
+    return {
+      center: this.scalePoint(gate.center),
+      axis: gate.axis,
+      halfLength: gate.halfLength,
+      halfThickness: gate.halfThickness,
+      hitboxHalfThickness: gate.hitboxHalfThickness,
+    };
   }
 
   private distanceToTrack(x: number, y: number) {
@@ -450,7 +544,7 @@ export class WorldMap {
     const distance = this.distanceToTrack(x, y);
 
     return (
-      distance <= ROAD_HALF_WIDTH + Math.max(cellWidth, cellHeight) * 0.25 &&
+      distance <= this.roadHalfWidth + Math.max(cellWidth, cellHeight) * 0.25 &&
       this.isPointInsideGateForRender(x, y, gate, parallelPadding, perpendicularPadding)
     );
   }
@@ -509,4 +603,246 @@ export class WorldMap {
     const position = ((y * 10) % 7 + x) % VOIDTEXT.length;
     return VOIDTEXT[position];
   }
+
+  private holeCharacterForCoordinate(x: number, y: number) {
+    const position = Math.abs(x * 3 + y * 5) % HOLETEXT.length;
+    return HOLETEXT[position];
+  }
+
+  private effectCharacterForCoordinate(x: number, y: number, text: string) {
+    const position = Math.abs(x + y * 2) % text.length;
+    return text[position];
+  }
+
+  private isPointInsideHole(x: number, y: number) {
+    return this.holes.some((hole) => (
+      Math.hypot(x - hole.center.x, y - hole.center.y) <= hole.radius
+    ));
+  }
+
+  private getHazardAtPoint(x: number, y: number) {
+    return this.hazards.find((hazard) => (
+      Math.hypot(x - hazard.center.x, y - hazard.center.y) <= hazard.radius
+    ));
+  }
 }
+
+const lineHalfLength = ROAD_HALF_WIDTH + BORDER_THICKNESS * 1.2;
+const halfThickness = BORDER_THICKNESS * 0.24;
+const hitboxHalfThickness = BORDER_THICKNESS * 0.75;
+
+const LEVELS: LevelDefinition[] = [
+  {
+    id: "loop",
+    name: "Grand Loop",
+    description: "Wide road, full checkpoint route.",
+    mode: "race",
+    roadHalfWidth: ROAD_HALF_WIDTH,
+    hasWalls: true,
+    spawn: { x: 8, y: 60 },
+    points: [
+      { x: 8, y: 60 },
+      { x: 14, y: 30 },
+      { x: 52, y: 30 },
+      { x: 66, y: 30 },
+      { x: 78, y: 16 },
+      { x: 100, y: 8 },
+      { x: 124, y: 8 },
+      { x: 142, y: 23 },
+      { x: 172, y: 23 },
+      { x: 196, y: 34 },
+      { x: 208, y: 54 },
+      { x: 208, y: 112 },
+      { x: 194, y: 132 },
+      { x: 126, y: 132 },
+      { x: 106, y: 122 },
+      { x: 106, y: 100 },
+      { x: 120, y: 90 },
+      { x: 166, y: 90 },
+      { x: 180, y: 78 },
+      { x: 180, y: 66 },
+      { x: 168, y: 56 },
+      { x: 116, y: 56 },
+      { x: 96, y: 66 },
+      { x: 86, y: 78 },
+      { x: 42, y: 78 },
+      { x: 28, y: 90 },
+      { x: 28, y: 110 },
+      { x: 42, y: 122 },
+      { x: 82, y: 122 },
+      { x: 96, y: 112 },
+      { x: 96, y: 104 },
+      { x: 84, y: 100 },
+      { x: 50, y: 100 },
+      { x: 28, y: 92 },
+      { x: 14, y: 78 },
+      { x: 8, y: 60 },
+      { x: 8, y: 42 },
+    ],
+    startLine: { center: { x: 9, y: 42 }, axis: "horizontal", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+    checkpoints: [
+      { center: { x: 36, y: 30 }, axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: { x: 112, y: 8 }, axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: { x: 162, y: 23 }, axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: { x: 208, y: 82 }, axis: "horizontal", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: { x: 135, y: 90 }, axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: { x: 128, y: 56 }, axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: { x: 54, y: 120 }, axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+      { center: { x: 54, y: 100 }, axis: "vertical", halfLength: lineHalfLength, halfThickness, hitboxHalfThickness },
+    ],
+    holes: [],
+    hazards: [
+      { center: { x: 74, y: 30 }, radius: 2.2, kind: "boost" },
+      { center: { x: 154, y: 90 }, radius: 2.4, kind: "boost" },
+      { center: { x: 34, y: 106 }, radius: 2.2, kind: "trap" },
+    ],
+  },
+  {
+    id: "needle",
+    name: "Needle Run",
+    description: "Thin bridges, hole traps, short technical route.",
+    mode: "race",
+    roadHalfWidth: CHALLENGE_ROAD_HALF_WIDTH,
+    hasWalls: false,
+    spawn: { x: 8, y: 32 },
+    points: [
+      { x: 8, y: 32 },
+      { x: 46, y: 32 },
+      { x: 68, y: 18 },
+      { x: 96, y: 18 },
+      { x: 116, y: 36 },
+      { x: 116, y: 64 },
+      { x: 90, y: 82 },
+      { x: 54, y: 82 },
+      { x: 28, y: 64 },
+      { x: 28, y: 48 },
+      { x: 8, y: 32 },
+    ],
+    startLine: {
+      center: { x: 10, y: 32 },
+      axis: "vertical",
+      halfLength: BORDER_THICKNESS * 1.3,
+      halfThickness,
+      hitboxHalfThickness,
+    },
+    checkpoints: [
+      { center: { x: 58, y: 24 }, axis: "vertical", halfLength: BORDER_THICKNESS * 1.2, halfThickness, hitboxHalfThickness },
+      { center: { x: 116, y: 50 }, axis: "horizontal", halfLength: BORDER_THICKNESS * 1.2, halfThickness, hitboxHalfThickness },
+      { center: { x: 72, y: 82 }, axis: "vertical", halfLength: BORDER_THICKNESS * 1.2, halfThickness, hitboxHalfThickness },
+    ],
+    holes: [],
+    hazards: [
+      { center: { x: 48, y: 32 }, radius: 1.8, kind: "boost" },
+      { center: { x: 96, y: 18 }, radius: 1.8, kind: "trap" },
+      { center: { x: 28, y: 54 }, radius: 1.8, kind: "trap" },
+    ],
+  },
+  {
+    id: "skyline",
+    name: "Skyline Thread",
+    description: "No walls, long one-letter bridges, boosts over gaps.",
+    mode: "race",
+    roadHalfWidth: CHALLENGE_ROAD_HALF_WIDTH,
+    hasWalls: false,
+    spawn: { x: 8, y: 48 },
+    points: [
+      { x: 8, y: 48 },
+      { x: 32, y: 48 },
+      { x: 52, y: 28 },
+      { x: 84, y: 28 },
+      { x: 104, y: 52 },
+      { x: 134, y: 52 },
+      { x: 158, y: 30 },
+      { x: 190, y: 30 },
+      { x: 214, y: 58 },
+      { x: 198, y: 88 },
+      { x: 158, y: 88 },
+      { x: 126, y: 70 },
+      { x: 92, y: 86 },
+      { x: 54, y: 82 },
+      { x: 26, y: 72 },
+      { x: 8, y: 48 },
+    ],
+    startLine: { center: { x: 10, y: 48 }, axis: "vertical", halfLength: BORDER_THICKNESS * 1.1, halfThickness, hitboxHalfThickness },
+    checkpoints: [
+      { center: { x: 70, y: 28 }, axis: "vertical", halfLength: BORDER_THICKNESS, halfThickness, hitboxHalfThickness },
+      { center: { x: 140, y: 52 }, axis: "vertical", halfLength: BORDER_THICKNESS, halfThickness, hitboxHalfThickness },
+      { center: { x: 206, y: 66 }, axis: "horizontal", halfLength: BORDER_THICKNESS, halfThickness, hitboxHalfThickness },
+      { center: { x: 112, y: 78 }, axis: "vertical", halfLength: BORDER_THICKNESS, halfThickness, hitboxHalfThickness },
+    ],
+    holes: [],
+    hazards: [
+      { center: { x: 38, y: 42 }, radius: 1.6, kind: "boost" },
+      { center: { x: 104, y: 52 }, radius: 1.5, kind: "boost" },
+      { center: { x: 188, y: 86 }, radius: 1.8, kind: "trap" },
+      { center: { x: 64, y: 82 }, radius: 1.8, kind: "trap" },
+    ],
+  },
+  {
+    id: "switchback",
+    name: "Switchback Sink",
+    description: "No walls, tight S bends, holes inside every mistake.",
+    mode: "race",
+    roadHalfWidth: CHALLENGE_ROAD_HALF_WIDTH,
+    hasWalls: false,
+    spawn: { x: 10, y: 96 },
+    points: [
+      { x: 10, y: 96 },
+      { x: 38, y: 96 },
+      { x: 58, y: 78 },
+      { x: 92, y: 78 },
+      { x: 112, y: 58 },
+      { x: 82, y: 42 },
+      { x: 44, y: 42 },
+      { x: 30, y: 24 },
+      { x: 78, y: 18 },
+      { x: 136, y: 22 },
+      { x: 162, y: 46 },
+      { x: 148, y: 74 },
+      { x: 110, y: 96 },
+      { x: 64, y: 112 },
+      { x: 24, y: 112 },
+      { x: 10, y: 96 },
+    ],
+    startLine: { center: { x: 12, y: 96 }, axis: "vertical", halfLength: BORDER_THICKNESS * 1.15, halfThickness, hitboxHalfThickness },
+    checkpoints: [
+      { center: { x: 78, y: 78 }, axis: "vertical", halfLength: BORDER_THICKNESS * 1.1, halfThickness, hitboxHalfThickness },
+      { center: { x: 58, y: 42 }, axis: "vertical", halfLength: BORDER_THICKNESS * 1.1, halfThickness, hitboxHalfThickness },
+      { center: { x: 122, y: 22 }, axis: "vertical", halfLength: BORDER_THICKNESS * 1.1, halfThickness, hitboxHalfThickness },
+      { center: { x: 132, y: 84 }, axis: "vertical", halfLength: BORDER_THICKNESS * 1.1, halfThickness, hitboxHalfThickness },
+    ],
+    holes: [],
+    hazards: [
+      { center: { x: 46, y: 92 }, radius: 1.8, kind: "trap" },
+      { center: { x: 86, y: 20 }, radius: 2.0, kind: "boost" },
+      { center: { x: 152, y: 44 }, radius: 1.8, kind: "trap" },
+      { center: { x: 42, y: 112 }, radius: 1.8, kind: "boost" },
+    ],
+  },
+  {
+    id: "starfall",
+    name: "Starfall Arena",
+    description: "Two minute battle arena. Collect shared stars before rivals do.",
+    mode: "stars",
+    roadHalfWidth: SCALE * 28,
+    hasWalls: true,
+    spawn: { x: 28, y: 58 },
+    points: [
+      { x: 18, y: 58 },
+      { x: 218, y: 58 },
+    ],
+    startLine: { center: { x: 18, y: 58 }, axis: "vertical", halfLength: 0, halfThickness: 0, hitboxHalfThickness: 0 },
+    checkpoints: [],
+    holes: [
+      { center: { x: 74, y: 36 }, radius: 2.2 },
+      { center: { x: 148, y: 82 }, radius: 2.4 },
+      { center: { x: 190, y: 44 }, radius: 2.0 },
+    ],
+    hazards: [
+      { center: { x: 62, y: 72 }, radius: 3.4, kind: "trap" },
+      { center: { x: 118, y: 38 }, radius: 3.2, kind: "boost" },
+      { center: { x: 164, y: 64 }, radius: 3.4, kind: "trap" },
+      { center: { x: 204, y: 82 }, radius: 3.2, kind: "boost" },
+    ],
+  },
+];

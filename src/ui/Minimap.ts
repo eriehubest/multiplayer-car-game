@@ -38,6 +38,8 @@ export class Minimap {
     ctx.fillRect(0, 0, width, height);
 
     this.drawTrack(ctx, world, offsetX, offsetY, scale);
+    this.drawHoles(ctx, world, offsetX, offsetY, scale);
+    this.drawHazards(ctx, world, offsetX, offsetY, scale);
     this.drawRaceGates(ctx, world, offsetX, offsetY, scale);
     this.drawPlayer(ctx, player, offsetX, offsetY, scale);
   }
@@ -69,6 +71,57 @@ export class Minimap {
     ctx.strokeStyle = "#20262f";
     ctx.lineWidth = world.getRoadHalfWidth() * 2 * scale;
     ctx.stroke();
+  }
+
+  private drawHoles(
+    ctx: CanvasRenderingContext2D,
+    world: WorldMap,
+    offsetX: number,
+    offsetY: number,
+    scale: number,
+  ) {
+    for (const hole of world.getHoles()) {
+      const x = offsetX + hole.center.x * scale;
+      const y = offsetY + hole.center.y * scale;
+      const radius = Math.max(2, hole.radius * scale);
+
+      ctx.save();
+      ctx.fillStyle = "#07090c";
+      ctx.strokeStyle = "#ffb040";
+      ctx.lineWidth = 1.5;
+      ctx.shadowColor = "#ffb040";
+      ctx.shadowBlur = 5;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  private drawHazards(
+    ctx: CanvasRenderingContext2D,
+    world: WorldMap,
+    offsetX: number,
+    offsetY: number,
+    scale: number,
+  ) {
+    for (const hazard of world.getHazards()) {
+      const x = offsetX + hazard.center.x * scale;
+      const y = offsetY + hazard.center.y * scale;
+      const radius = Math.max(2, hazard.radius * scale);
+      const color = hazard.kind === "boost" ? "#f6ff4d" : "#c981ff";
+
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.85;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 4;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   private drawRaceGates(

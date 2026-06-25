@@ -9,6 +9,24 @@ export type WorldBounds = {
   maxY: number;
 };
 
+export type CarFootprint = {
+  center: {
+    x: number;
+    y: number;
+  };
+  angle: number;
+  halfLength: number;
+  halfWidth: number;
+  corners: Array<{
+    x: number;
+    y: number;
+  }>;
+};
+
+const HITBOX_HEIGHT = 24;
+const HITBOX_WIDTH_PER_CHARACTER = 18;
+const HITBOX_MIN_LENGTH = 48;
+
 export class PlayerVehicle {
   x = 0;
   y = 0;
@@ -17,6 +35,7 @@ export class PlayerVehicle {
   velocity = new Vector2();
   inputVector = new Vector2();
   localVector = new Vector2();
+  private boostTimer = 0;
 
   constructor(
     private input: InputState,
@@ -26,6 +45,39 @@ export class PlayerVehicle {
   placeAt(x: number, y: number) {
     this.x = x;
     this.y = y;
+  }
+
+  getFootprint(): CarFootprint {
+    const halfLength = Math.max(
+      HITBOX_MIN_LENGTH,
+      this.settings.playerLabel.length * HITBOX_WIDTH_PER_CHARACTER,
+    ) / 2;
+    const halfWidth = HITBOX_HEIGHT / 2;
+    const forward = this.getForwardVector();
+    const right = this.getRightVector();
+    const corners = [
+      this.corner(forward, right, halfLength, halfWidth),
+      this.corner(forward, right, halfLength, -halfWidth),
+      this.corner(forward, right, -halfLength, halfWidth),
+      this.corner(forward, right, -halfLength, -halfWidth),
+    ];
+
+    return {
+      center: {
+        x: this.x,
+        y: this.y,
+      },
+      angle: this.angle,
+      halfLength,
+      halfWidth,
+      corners,
+    };
+  }
+
+  getCollisionRadius() {
+    const footprint = this.getFootprint();
+
+    return Math.hypot(footprint.halfLength, footprint.halfWidth);
   }
 
   removeVelocityAlong(normal: Vector2) {
@@ -42,6 +94,7 @@ export class PlayerVehicle {
     this.applyAcceleration(deltaSeconds);
     this.applyDrift(deltaSeconds);
     this.applySpeedLimit();
+    this.boostTimer = Math.max(0, this.boostTimer - deltaSeconds);
 
     this.x += this.velocity.x * deltaSeconds;
     this.y += this.velocity.y * deltaSeconds;
@@ -51,6 +104,10 @@ export class PlayerVehicle {
     }
 
     this.speed = this.velocity.length();
+  }
+
+  triggerBoost(durationSeconds = 0.55) {
+    this.boostTimer = Math.max(this.boostTimer, durationSeconds);
   }
 
   render(element: HTMLElement | null, cameraX = 0, cameraY = 0) {
@@ -114,7 +171,12 @@ export class PlayerVehicle {
     const speed = this.velocity.length();
     const reverseLimit = this.settings.maxSpeed * 0.35;
     const forwardSpeed = this.getForwardVector().dot(this.velocity);
-    const limit = forwardSpeed < 0 ? reverseLimit : this.settings.maxSpeed;
+    const boostedLimit = this.settings.maxSpeed * 1.55;
+    const limit = forwardSpeed < 0
+      ? reverseLimit
+      : this.boostTimer > 0
+        ? boostedLimit
+        : this.settings.maxSpeed;
 
     if (speed > limit) {
       this.velocity.normalize().scale(limit);
@@ -150,5 +212,12 @@ export class PlayerVehicle {
 
   private getRightVector() {
     return Vector2.fromAngle(this.angle + Math.PI / 2);
+  }
+
+  private corner(forward: Vector2, right: Vector2, forwardOffset: number, rightOffset: number) {
+    return {
+      x: this.x + forward.x * forwardOffset + right.x * rightOffset,
+      y: this.y + forward.y * forwardOffset + right.y * rightOffset,
+    };
   }
 }

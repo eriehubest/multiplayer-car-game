@@ -2,6 +2,8 @@ import { jsonResponse } from "./response.ts";
 import { clampFinite, normalizeColor, normalizePlayerName, normalizeRoomId } from "./validation.ts";
 
 const ROOM_BROADCAST_MS = 50;
+const STAR_MATCH_MS = 120_000;
+const STAR_COUNT = 18;
 
 type PlayerState = {
   id: string;
@@ -22,25 +24,51 @@ type Client = {
 
 type Room = {
   id: string;
+  levelId: string;
+  starMatch: StarMatch | null;
   clients: Map<string, Client>;
   intervalId: ReturnType<typeof setInterval>;
 };
 
-type ClientMessage = {
-  type: "player:update";
+type Star = {
+  id: string;
   x: number;
   y: number;
-  angle: number;
-  speed: number;
-  color?: string;
-  name?: string;
 };
+
+type StarMatch = {
+  endsAt: number;
+  stars: Star[];
+  scores: Record<string, number>;
+};
+
+type ClientMessage =
+  | {
+    type: "player:update";
+    x: number;
+    y: number;
+    angle: number;
+    speed: number;
+    color?: string;
+    name?: string;
+  }
+  | {
+    type: "room:level";
+    levelId: string;
+  }
+  | {
+    type: "star:collect";
+    starId: string;
+  };
+
+type PlayerUpdateMessage = Extract<ClientMessage, { type: "player:update" }>;
 
 const rooms = new Map<string, Room>();
 
 export function getRoomSummaries() {
   return [...rooms.values()].map((room) => ({
     id: room.id,
+    levelId: room.levelId,
     players: room.clients.size,
   }));
 }
@@ -78,7 +106,12 @@ export function handleWebSocket(request: Request, url: URL): Response {
       type: "player:welcome",
       id: clientId,
       roomId,
+      levelId: room.levelId,
       tickMs: ROOM_BROADCAST_MS,
+    });
+    send(socket, {
+      type: "room:level",
+      levelId: room.levelId,
     });
     broadcastRoom(room, {
       type: "player:joined",
@@ -91,6 +124,22 @@ export function handleWebSocket(request: Request, url: URL): Response {
 
     if (!message) {
       send(socket, { type: "error", error: "Invalid message" });
+      return;
+    }
+
+    if (message.type === "room:level") {
+      room.levelId = normalizeLevelId(message.levelId);
+      room.starMatch = room.levelId === "starfall" ? createStarMatch() : null;
+      broadcastRoom(room, {
+        type: "room:level",
+        levelId: room.levelId,
+      });
+      broadcastStarMatch(room);
+      return;
+    }
+
+    if (message.type === "star:collect") {
+      collectStar(room, client, message.starId);
       return;
     }
 
@@ -115,6 +164,8 @@ function getOrCreateRoom(roomId: string): Room {
 
   const room: Room = {
     id: roomId,
+    levelId: "loop",
+    starMatch: null,
     clients: new Map(),
     intervalId: setInterval(() => {
       const current = rooms.get(roomId);
@@ -143,7 +194,7 @@ function removeClient(roomId: string, clientId: string) {
   }
 }
 
-function updateClientState(client: Client, message: ClientMessage) {
+function updateClientState(client: Client, message: PlayerUpdateMessage) {
   client.state = {
     ...client.state,
     name: message.name ? normalizePlayerName(message.name) : client.state.name,
@@ -161,7 +212,34 @@ function broadcastRoomState(room: Room) {
     type: "room:state",
     roomId: room.id,
     players: [...room.clients.values()].map((client) => client.state),
+    starMatch: room.starMatch,
     sentAt: Date.now(),
+  });
+}
+
+function collectStar(room: Room, client: Client, starId: string) {
+  if (!room.starMatch || Date.now() > room.starMatch.endsAt) return;
+
+  const index = room.starMatch.stars.findIndex((star) => star.id === starId);
+
+  if (index === -1) return;
+
+  room.starMatch.stars.splice(index, 1);
+  room.starMatch.scores[client.id] = (room.starMatch.scores[client.id] ?? 0) + 1;
+
+  if (room.starMatch.stars.length < STAR_COUNT) {
+    room.starMatch.stars.push(createStar());
+  }
+
+  broadcastStarMatch(room);
+}
+
+function broadcastStarMatch(room: Room) {
+  if (!room.starMatch) return;
+
+  broadcastRoom(room, {
+    type: "star:state",
+    starMatch: room.starMatch,
   });
 }
 
@@ -200,17 +278,47 @@ function isClientMessage(value: unknown): value is ClientMessage {
 
   const candidate = value as Record<string, unknown>;
 
-  return (
+  if (
     candidate.type === "player:update" &&
     typeof candidate.x === "number" &&
     typeof candidate.y === "number" &&
     typeof candidate.angle === "number" &&
     typeof candidate.speed === "number"
-  );
+  ) {
+    return true;
+  }
+
+  if (candidate.type === "room:level" && typeof candidate.levelId === "string") {
+    return true;
+  }
+
+  return candidate.type === "star:collect" && typeof candidate.starId === "string";
+}
+
+function normalizeLevelId(value: string) {
+  const levelId = value.trim().toLowerCase();
+
+  return /^[a-z0-9-]{2,32}$/.test(levelId) ? levelId : "loop";
 }
 
 function randomColor() {
   const colors = ["#ffcf33", "#52ff7a", "#61a8ff", "#ff67d8", "#ff7a59"];
 
   return colors[Math.floor(Math.random() * colors.length)];
+}
+
+function createStarMatch(): StarMatch {
+  return {
+    endsAt: Date.now() + STAR_MATCH_MS,
+    stars: Array.from({ length: STAR_COUNT }, () => createStar()),
+    scores: {},
+  };
+}
+
+function createStar(): Star {
+  return {
+    id: crypto.randomUUID(),
+    x: 0.08 + Math.random() * 0.84,
+    y: 0.16 + Math.random() * 0.68,
+  };
 }

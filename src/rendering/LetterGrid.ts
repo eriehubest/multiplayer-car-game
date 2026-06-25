@@ -26,7 +26,7 @@ export class LetterGrid {
     columns: 0,
     rows: 0,
   };
-  private cachedCells: CachedCell[] = [];
+  private cachedCells = new Map<string, CachedCell>();
   private lastCamera: Camera | null = null;
   private world: WorldMap | null = null;
 
@@ -61,17 +61,7 @@ export class LetterGrid {
       originColumn: Math.floor(camera.x / cell.width),
       originRow: Math.floor(camera.y / cell.height),
     };
-    this.cachedCells = Array.from({ length: mapColumns * mapRows }, (_, index) => {
-      const column = index % mapColumns;
-      const row = Math.floor(index / mapColumns);
-      const tile = world.getTile(column, row, cell.width, cell.height);
-
-      return {
-        char: tile.char,
-        kind: tile.kind,
-        size: this.fontSizeForCoordinate(column, row),
-      };
-    });
+    this.cachedCells.clear();
 
     this.root.innerHTML = `
       <section class="game-shell">
@@ -82,9 +72,10 @@ export class LetterGrid {
         >
           <canvas class="letter-canvas" aria-label="Random letter game field"></canvas>
           <section class="remote-players" aria-label="remote players"></section>
-          <span class="player" aria-label="player">car</span>
+          <span class="player" aria-label="player">${this.settings.playerLabel}</span>
           <canvas class="minimap" aria-label="Track minimap"></canvas>
           <section class="race-hud" aria-label="Race status"></section>
+          <button class="menu-button" type="button">menu</button>
           <button class="leaderboard-button" type="button">leaderboard</button>
           <section class="leaderboard-panel" aria-label="Leaderboard" hidden>
             <div class="leaderboard-card">
@@ -100,6 +91,8 @@ export class LetterGrid {
               <p class="leaderboard-note"></p>
             </div>
           </section>
+          <section class="menu-overlay" aria-label="Game menu"></section>
+          <section class="loading-overlay" aria-label="Loading" hidden></section>
         </section>
 
         ${debugPanelMarkup}
@@ -161,6 +154,18 @@ export class LetterGrid {
     return this.root.querySelector<HTMLElement>(".leaderboard-note");
   }
 
+  getMenuButton() {
+    return this.root.querySelector<HTMLButtonElement>(".menu-button");
+  }
+
+  getMenuOverlay() {
+    return this.root.querySelector<HTMLElement>(".menu-overlay");
+  }
+
+  getLoadingOverlay() {
+    return this.root.querySelector<HTMLElement>(".loading-overlay");
+  }
+
   getCellSize() {
     return {
       width: this.viewport.cellWidth,
@@ -198,6 +203,7 @@ export class LetterGrid {
     const probe = document.createElement("span");
     probe.className = "cell-probe";
     probe.textContent = "m";
+    probe.style.fontFamily = this.settings.trackFontFamily;
     this.root.append(probe);
 
     const rect = probe.getBoundingClientRect();
@@ -256,7 +262,7 @@ export class LetterGrid {
 
     for (let row = startRow; row <= endRow; row += 1) {
       for (let column = startColumn; column <= endColumn; column += 1) {
-        const cell = this.cachedCells[row * this.map.columns + column];
+        const cell = this.getCachedCell(column, row);
 
         if (!cell) continue;
 
@@ -288,7 +294,7 @@ export class LetterGrid {
     y: number,
     isActive: boolean,
   ) {
-    ctx.font = `${cell.size}px "Courier New", Courier, ui-monospace, monospace`;
+    ctx.font = `${cell.size}px ${this.settings.trackFontFamily}`;
     ctx.shadowBlur = 0;
     ctx.shadowColor = "transparent";
 
@@ -312,6 +318,18 @@ export class LetterGrid {
       ctx.fillStyle = "#ff4d5e";
       ctx.shadowColor = "rgb(255 77 94 / 0.85)";
       ctx.shadowBlur = 8;
+    } else if (cell.kind === "hole") {
+      ctx.fillStyle = "#0b0d10";
+      ctx.shadowColor = "rgb(255 180 64 / 0.65)";
+      ctx.shadowBlur = 10;
+    } else if (cell.kind === "boost") {
+      ctx.fillStyle = "#f6ff4d";
+      ctx.shadowColor = "rgb(246 255 77 / 0.82)";
+      ctx.shadowBlur = 12;
+    } else if (cell.kind === "trap") {
+      ctx.fillStyle = "#c981ff";
+      ctx.shadowColor = "rgb(201 129 255 / 0.78)";
+      ctx.shadowBlur = 10;
     } else if (cell.kind === "outside") {
       ctx.fillStyle = "#252b33";
     } else {
@@ -319,5 +337,24 @@ export class LetterGrid {
     }
 
     ctx.fillText(cell.char, x, y);
+  }
+
+  private getCachedCell(column: number, row: number) {
+    if (!this.world) return null;
+
+    const key = `${column}:${row}`;
+    const cached = this.cachedCells.get(key);
+
+    if (cached) return cached;
+
+    const tile = this.world.getTile(column, row, this.viewport.cellWidth, this.viewport.cellHeight);
+    const cell = {
+      char: tile.char,
+      kind: tile.kind,
+      size: this.fontSizeForCoordinate(column, row),
+    };
+
+    this.cachedCells.set(key, cell);
+    return cell;
   }
 }

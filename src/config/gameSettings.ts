@@ -1,6 +1,8 @@
 export type GameSettings = {
   letterColor: string;
+  trackFontFamily: string;
   playerColor: string;
+  playerLabel: string;
   maxSpeed: number;
   acceleration: number;
   brakePower: number;
@@ -16,7 +18,9 @@ export const GAME_INSET = 50;
 export function createDefaultSettings(): GameSettings {
   return {
     letterColor: "#56606d",
+    trackFontFamily: "Menlo, Monaco, Consolas, monospace",
     playerColor: "#ffcf33",
+    playerLabel: "car",
     maxSpeed: 676,
     acceleration: 520,
     brakePower: 720,
