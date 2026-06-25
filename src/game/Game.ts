@@ -505,7 +505,7 @@ export class Game {
 
     this.grid.getMenuOverlay()?.addEventListener("click", (event) => {
       const target = event.target instanceof HTMLElement
-        ? event.target.closest<HTMLElement>("[data-action]")
+        ? event.target.closest<HTMLButtonElement>("button[data-action]")
         : null;
 
       if (!target) return;
